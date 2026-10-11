@@ -47,7 +47,7 @@ pub fn evaluate_member_geometry(
                     (BlockActionKind::StretchLineEndX | BlockActionKind::StretchLineEndY, _) => {
                         return Err(ParamError::Parse("LINE endpoint stretch requires LINE members".into()));
                     }
-                    (_, entity) => codec::Entity::apply_transform(entity, &transform),
+                    (_, entity) => crate::scene::view::dispatch::apply_transform(entity, &transform),
                 }
             }
         }
