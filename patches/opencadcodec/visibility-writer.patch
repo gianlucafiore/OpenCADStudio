@@ -1,0 +1,58 @@
+diff --git a/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs b/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
+--- a/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
++++ b/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
+@@ -507,1 +507,55 @@
+-            DynamicBlockData::VisibilityParameter(_) => return,
++            DynamicBlockData::VisibilityParameter(value) => {
++                // AcDbEvalExpr
++                self.writer.write_bit_long(value.eval_parent_id);
++                self.writer.write_bit_long(value.eval_major);
++                self.writer.write_bit_long(value.eval_minor);
++                self.writer.write_bit_short(value.eval_value_code);
++                self.write_dynamic_eval_value(&value.eval_value);
++                self.writer.write_bit_long(value.eval_node_id);
++                // AcDbBlockElement
++                self.writer.write_variable_text(&value.element_name);
++                self.writer.write_bit_long(value.element_major);
++                self.writer.write_bit_long(value.element_minor);
++                self.writer.write_bit_long(value.element_eed_1071);
++                // AcDbBlockParameter and AcDbBlock1PtParameter
++                self.writer.write_bit(value.show_properties);
++                self.writer.write_bit(value.chain_actions);
++                self.writer.write_3bit_double(value.def_point);
++                for property in &value.property_info {
++                    self.writer.write_bit_long(property.connections.len() as i32);
++                    for connection in &property.connections {
++                        self.writer.write_bit_long(connection.code);
++                        self.writer.write_variable_text(&connection.name);
++                    }
++                }
++                self.writer.write_bit_long(value.property_info_count);
++                // AcDbBlockVisibilityParameter
++                self.writer.write_bit(value.is_initialized);
++                self.writer.write_variable_text(&value.name);
++                self.writer.write_variable_text(&value.description);
++                self.writer.write_bit(value.unknown_bool);
++                self.writer.write_bit_long(value.all_blocks.len() as i32);
++                for handle in &value.all_blocks {
++                    self.writer.write_handle(
++                        DwgReferenceType::HardPointer, handle.value(),
++                    );
++                }
++                self.writer.write_bit_long(value.states.len() as i32);
++                for state in &value.states {
++                    self.writer.write_variable_text(&state.name);
++                    self.writer.write_bit_long(state.visible_blocks.len() as i32);
++                    for handle in &state.visible_blocks {
++                        self.writer.write_handle(
++                            DwgReferenceType::HardPointer, handle.value(),
++                        );
++                    }
++                    self.writer.write_bit_long(state.visible_params.len() as i32);
++                    for handle in &state.visible_params {
++                        self.writer.write_handle(
++                            DwgReferenceType::HardPointer, handle.value(),
++                        );
++                    }
++                }
++            },
