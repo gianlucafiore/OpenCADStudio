@@ -137,6 +137,12 @@ impl DynamicBlockInstance {
             candidate.set(key, value)?;
         }
         candidate.set(name, expression)?;
+        // Explicitly validate the edited value even for a disabled definition
+        // or a parameter not yet linked to an action.
+        let resolved = candidate.resolve(name)?;
+        if !resolved.is_finite() {
+            return Err(ParamError::Parse("parameter must be finite".into()));
+        }
         // Validate values of all actions now, so invalid updates aren't stored.
         let mut updated = self.clone();
         updated.overrides.insert(name.to_owned(), expression.to_owned());
