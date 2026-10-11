@@ -188,6 +188,63 @@ impl DynamicBlockInstance {
     }
 }
 
+/// Per-document runtime state for definitions and individual INSERTs.
+/// Persistent serialization and native DWG mapping are separate adapters.
+#[derive(Debug, Clone, Default)]
+pub struct DynamicBlockRegistry {
+    definitions: HashMap<String, DynamicBlockDefinition>,
+    instances: HashMap<u64, (String, DynamicBlockInstance)>,
+}
+
+impl DynamicBlockRegistry {
+    pub fn register_definition(&mut self, definition: DynamicBlockDefinition) {
+        self.definitions.insert(definition.name.clone(), definition);
+    }
+
+    pub fn definition(&self, name: &str) -> Option<&DynamicBlockDefinition> {
+        self.definitions.get(name)
+    }
+
+    /// Attach an INSERT to an existing dynamic definition. The same INSERT
+    /// can be attached only once; reattaching clears its old overrides.
+    pub fn attach_insert(&mut self, insert_handle: u64, definition_name: &str) -> Result<(), ParamError> {
+        if insert_handle == 0 {
+            return Err(ParamError::Parse("INSERT handle must not be null".into()));
+        }
+        if !self.definitions.contains_key(definition_name) {
+            return Err(ParamError::UndefinedReference(definition_name.to_owned()));
+        }
+        self.instances.insert(insert_handle, (
+            definition_name.to_owned(), DynamicBlockInstance::new(insert_handle),
+        ));
+        Ok(())
+    }
+
+    pub fn detach_insert(&mut self, insert_handle: u64) {
+        self.instances.remove(&insert_handle);
+    }
+
+    pub fn set_insert_parameter(&mut self, insert_handle: u64, name: &str, expression: &str) -> Result<(), ParamError> {
+        let (definition_name, instance) = self.instances.get_mut(&insert_handle)
+            .ok_or_else(|| ParamError::UndefinedReference(format!("INSERT {insert_handle}")))?;
+        let definition = self.definitions.get(definition_name)
+            .ok_or_else(|| ParamError::UndefinedReference(definition_name.clone()))?;
+        instance.set_override(definition, name, expression)
+    }
+
+    pub fn evaluate_insert(
+        &self,
+        insert_handle: u64,
+        members: &[(u64, EntityType)],
+    ) -> Result<Vec<(u64, EntityType)>, ParamError> {
+        let (definition_name, instance) = self.instances.get(&insert_handle)
+            .ok_or_else(|| ParamError::UndefinedReference(format!("INSERT {insert_handle}")))?;
+        let definition = self.definitions.get(definition_name)
+            .ok_or_else(|| ParamError::UndefinedReference(definition_name.clone()))?;
+        evaluate_member_geometry(definition, instance, members)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +327,28 @@ mod tests {
         assert_eq!(other.start.x, 0.0);
         let EntityType::Line(ref original) = members[0].1 else { panic!("expected line") };
         assert_eq!(original.start.x, 0.0);
+    }
+
+    #[test]
+    fn registry_tracks_insert_values_independently() {
+        let mut registry = DynamicBlockRegistry::default();
+        registry.register_definition(sample());
+        registry.attach_insert(100, "DOOR").unwrap();
+        registry.attach_insert(101, "DOOR").unwrap();
+        registry.set_insert_parameter(100, "width", "1.2").unwrap();
+        let source = vec![(10, EntityType::Line(codec::entities::Line {
+            start: Vector3::new(0.0, 0.0, 0.0),
+            end: Vector3::new(1.0, 0.0, 0.0),
+            ..Default::default()
+        }))];
+        let wider = registry.evaluate_insert(100, &source).unwrap();
+        let original = registry.evaluate_insert(101, &source).unwrap();
+        let (EntityType::Line(w), EntityType::Line(n)) = (&wider[0].1, &original[0].1) else { panic!("line expected") };
+        assert!((w.start.x - 0.3).abs() < 1e-9);
+        assert_eq!(n.start.x, 0.0);
+        registry.detach_insert(100);
+        assert!(registry.evaluate_insert(100, &source).is_err());
+        assert!(registry.evaluate_insert(101, &source).is_ok());
     }
 
     #[test]
