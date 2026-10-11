@@ -171,8 +171,71 @@ pub fn remove_visibility_state(
     Ok(())
 }
 
+/// In-progress BEDIT visibility authoring, separate from the live DWG data.
+/// A draft does not modify the drawing until it is validated and compiled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisibilityAuthorDraft {
+    pub parameter_name: String,
+    pub grip_point: codec::types::Vector3,
+    pub member_handles: Vec<Handle>,
+    pub states: Vec<(String, Vec<Handle>)>,
+}
+
+impl VisibilityAuthorDraft {
+    pub fn new(name: impl Into<String>, members: Vec<Handle>) -> Self {
+        Self {
+            parameter_name: name.into(),
+            grip_point: codec::types::Vector3::new(0.0, 0.0, 0.0),
+            member_handles: members,
+            states: Vec::new(),
+        }
+    }
+
+    /// Record the current BEDIT selection as the geometry for a new state.
+    /// Existing states are never mutated on a failed operation.
+    pub fn capture_selection(
+        &mut self,
+        state_name: &str,
+        selected: &[Handle],
+    ) -> Result<(), VisibilityAuthorError> {
+        let mut trial = self.clone();
+        trial.states.push((state_name.to_owned(), selected.to_vec()));
+        trial.build()?;
+        *self = trial;
+        Ok(())
+    }
+
+    /// Validate the complete draft and construct codec-native data.
+    /// Authoring the evaluation graph and saving to DWG happen elsewhere.
+    pub fn build(&self) -> Result<BlockVisibilityParameter, VisibilityAuthorError> {
+        build_visibility_parameter(
+            &self.parameter_name,
+            &self.member_handles,
+            self.states.clone(),
+            self.grip_point,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bedit_draft_captures_selection_without_editing_live_data() {
+        let a = Handle::new(10);
+        let b = Handle::new(20);
+        let mut draft = VisibilityAuthorDraft::new("View", vec![a, b]);
+        draft.capture_selection("Plan", &[a]).unwrap();
+        let before = draft.clone();
+        assert_eq!(draft.capture_selection("Elevation", &[Handle::new(99)]),
+            Err(VisibilityAuthorError::UnknownMember(99)));
+        assert_eq!(draft, before);
+        draft.capture_selection("Elevation", &[b]).unwrap();
+        let p = draft.build().unwrap();
+        assert_eq!(p.states[0].visible_blocks, vec![a]);
+        assert_eq!(p.states[1].visible_blocks, vec![b]);
+    }
+
+
     #[test]
     fn authoring_edits_are_validated_and_atomic() {
         let a = Handle::new(10);
