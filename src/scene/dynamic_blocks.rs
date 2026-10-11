@@ -4,6 +4,7 @@
 //! existing named-parameter evaluator, not a second expression engine or
 //! constraint solver. Rendering/persistence adapters are separate work.
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 use super::named_parameters::{ParamError, ParameterTable};
 use codec::types::{Transform, Vector3};
@@ -45,14 +46,14 @@ pub fn evaluate_member_geometry(
 
 /// A behavior attached to a named parameter, evaluated relative to its
 /// definition-time value. Entity IDs are block-definition member handles.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BlockAction {
     pub parameter: String,
     pub target_handles: Vec<u64>,
     pub kind: BlockActionKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockActionKind {
     MoveX,
     MoveY,
@@ -188,6 +189,30 @@ impl DynamicBlockInstance {
     }
 }
 
+/// A versioned, portable snapshot of dynamic behavior, independent of the
+/// binary DWG representation. NOT a substitute for native AutoCAD objects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RegistrySnapshot {
+    schema_version: u32,
+    definitions: Vec<DefinitionSnapshot>,
+    instances: Vec<InstanceSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct DefinitionSnapshot {
+    name: String,
+    enabled: bool,
+    parameters: Vec<(String, String)>,
+    actions: Vec<BlockAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct InstanceSnapshot {
+    insert_handle: u64,
+    definition_name: String,
+    overrides: Vec<(String, String)>,
+}
+
 /// Per-document runtime state for definitions and individual INSERTs.
 /// Persistent serialization and native DWG mapping are separate adapters.
 #[derive(Debug, Clone, Default)]
@@ -197,6 +222,61 @@ pub struct DynamicBlockRegistry {
 }
 
 impl DynamicBlockRegistry {
+    /// Serialize to a versioned JSON sidecar for tests and future document IO.
+    /// This is not an AutoCAD dynamic-block DWG encoder.
+    pub fn to_json(&self) -> Result<String, String> {
+        let mut definitions: Vec<_> = self.definitions.values().map(|d| DefinitionSnapshot {
+            name: d.name.clone(),
+            enabled: d.enabled,
+            parameters: d.parameters.iter().map(|p| (p.name.clone(), p.source.clone())).collect(),
+            actions: d.actions.clone(),
+        }).collect();
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut instances: Vec<_> = self.instances.iter().map(|(&handle, (name, instance))| {
+            let mut overrides: Vec<_> = instance.overrides.iter().map(|(k,v)| (k.clone(),v.clone())).collect();
+            overrides.sort_by(|a,b| a.0.cmp(&b.0));
+            InstanceSnapshot {insert_handle: handle, definition_name: name.clone(), overrides}
+        }).collect();
+        instances.sort_by_key(|i| i.insert_handle);
+        serde_json::to_string_pretty(&RegistrySnapshot {schema_version: 1, definitions, instances})
+            .map_err(|e| e.to_string())
+    }
+
+    /// Load atomically: validation errors never leak a partially loaded registry.
+    pub fn from_json(src: &str) -> Result<Self, String> {
+        let snapshot: RegistrySnapshot = serde_json::from_str(src).map_err(|e| e.to_string())?;
+        if snapshot.schema_version != 1 {
+            return Err(format!("unsupported dynamic block schema {}", snapshot.schema_version));
+        }
+        let mut registry = Self::default();
+        for definition in snapshot.definitions {
+            if definition.name.trim().is_empty() || registry.definitions.contains_key(&definition.name) {
+                return Err("empty or duplicate dynamic block name".into());
+            }
+            let mut rebuilt = DynamicBlockDefinition::new(definition.name);
+            rebuilt.enabled = definition.enabled;
+            for (name, source) in definition.parameters {
+                rebuilt.parameters.set(&name, &source).map_err(|e| e.to_string())?;
+            }
+            for action in definition.actions {
+                rebuilt.add_action(action).map_err(|e| e.to_string())?;
+            }
+            registry.register_definition(rebuilt);
+        }
+        for instance in snapshot.instances {
+            if registry.instances.contains_key(&instance.insert_handle) {
+                return Err("duplicate INSERT identity".into());
+            }
+            registry.attach_insert(instance.insert_handle, &instance.definition_name)
+                .map_err(|e| e.to_string())?;
+            for (name, expression) in instance.overrides {
+                registry.set_insert_parameter(instance.insert_handle, &name, &expression)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(registry)
+    }
+
     pub fn register_definition(&mut self, definition: DynamicBlockDefinition) {
         self.definitions.insert(definition.name.clone(), definition);
     }
@@ -327,6 +407,36 @@ mod tests {
         assert_eq!(other.start.x, 0.0);
         let EntityType::Line(ref original) = members[0].1 else { panic!("expected line") };
         assert_eq!(original.start.x, 0.0);
+    }
+
+    #[test]
+    fn json_roundtrip_preserves_independent_insert_values() {
+        let mut registry = DynamicBlockRegistry::default();
+        registry.register_definition(sample());
+        registry.attach_insert(123, "DOOR").unwrap();
+        registry.attach_insert(124, "DOOR").unwrap();
+        registry.set_insert_parameter(123, "width", "1.4").unwrap();
+        let json = registry.to_json().unwrap();
+        let restored = DynamicBlockRegistry::from_json(&json).unwrap();
+        assert_eq!(json, restored.to_json().unwrap());
+        let source = vec![(10, EntityType::Line(codec::entities::Line {
+            start: Vector3::new(0.0, 0.0, 0.0),
+            end: Vector3::new(1.0, 0.0, 0.0),
+            ..Default::default()
+        }))];
+        let (EntityType::Line(wide), EntityType::Line(normal)) = (
+            &restored.evaluate_insert(123, &source).unwrap()[0].1,
+            &restored.evaluate_insert(124, &source).unwrap()[0].1,
+        ) else { panic!("line expected") };
+        assert!((wide.start.x - 0.5).abs() < 1e-9);
+        assert_eq!(normal.start.x, 0.0);
+    }
+
+    #[test]
+    fn json_rejects_unknown_version() {
+        let registry = DynamicBlockRegistry::default();
+        let json = registry.to_json().unwrap().replace(\"\\\"schema_version\\\": 1\", \"\\\"schema_version\\\": 999\");
+        assert!(DynamicBlockRegistry::from_json(&json).is_err());
     }
 
     #[test]
