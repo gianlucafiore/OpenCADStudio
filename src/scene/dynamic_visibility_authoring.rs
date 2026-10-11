@@ -205,6 +205,35 @@ impl VisibilityAuthorDraft {
         }
     }
 
+    /// Reopen an imported visibility parameter as an editable draft. Preserve
+    /// the original state ordering and selected member handles; never share
+    /// mutable parameter data with the loaded drawing.
+    pub fn from_native_parameter(parameter: &BlockVisibilityParameter) -> Self {
+        Self {
+            parameter_name: parameter.name.clone(),
+            grip_point: parameter.def_point,
+            member_handles: parameter.all_blocks.clone(),
+            states: parameter.states.iter().map(|state| {
+                (state.name.clone(), state.visible_blocks.clone())
+            }).collect(),
+        }
+    }
+
+    /// Replace one selected state's members after validating the complete
+    /// draft. An invalid selection leaves all prior states untouched.
+    pub fn replace_selection(
+        &mut self,
+        state_name: &str,
+        selected: &[Handle],
+    ) -> Result<(), VisibilityAuthorError> {
+        let mut parameter = self.build()?;
+        set_visibility_state_members(&mut parameter, state_name, selected)?;
+        self.states = parameter.states.iter().map(|state| {
+            (state.name.clone(), state.visible_blocks.clone())
+        }).collect();
+        Ok(())
+    }
+
     /// Record the current BEDIT selection as the geometry for a new state.
     /// Existing states are never mutated on a failed operation.
     pub fn capture_selection(
@@ -233,6 +262,23 @@ impl VisibilityAuthorDraft {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reopens_native_visibility_choices_as_independent_draft() {
+        let a = Handle::new(10);
+        let b = Handle::new(20);
+        let original = build_visibility_parameter("Vista", &[a, b], vec![
+            ("Planta".into(), vec![a]),
+            ("Corte".into(), vec![b]),
+        ], codec::types::Vector3::new(1.0, 2.0, 0.0)).unwrap();
+        let mut draft = VisibilityAuthorDraft::from_native_parameter(&original);
+        draft.replace_selection("Planta", &[b]).unwrap();
+        assert_eq!(draft.build().unwrap().states[0].visible_blocks, vec![b]);
+        assert_eq!(original.states[0].visible_blocks, vec![a]);
+        assert_eq!(draft.replace_selection("Corte", &[Handle::new(999)]),
+            Err(VisibilityAuthorError::UnknownMember(999)));
+        assert_eq!(draft.build().unwrap().states[1].visible_blocks, vec![b]);
+    }
+
     #[test]
     fn bedit_draft_captures_selection_without_editing_live_data() {
         let a = Handle::new(10);
