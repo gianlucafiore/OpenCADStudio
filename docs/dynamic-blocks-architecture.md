@@ -60,3 +60,12 @@ This feature builds on OCS's existing parametric system. Do **not** add an indep
 - Consider states: conventional, OCS-authored dynamic, imported AutoCAD dynamic (possibly partially supported). A boolean UI toggle may be insufficient as persistence/interoperability status; keep provenance/capability diagnostics internally.
 - A dynamic block with zero actions may be in draft state; don't claim it's AutoCAD-compatible until native serialization and roundtrip are verified.
 - Prefer a subtle badge/icon on block lists and a simple type row in properties; avoid intrusive permanent panels.
+
+## Confirmed DWG writer gap (2026-10-11)
+
+The pinned `opencadcodec` writer at `src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs` has an explicit `DynamicBlockData::VisibilityParameter(_) => return` branch in `write_dynamic_block`. Reading the corresponding native parameter and rendering its dropdown in OCS **does not mean it can be authored and written**. The codec also holds `CadDocument::block_visibility_params` as a parsed read-side collection; placing a parameter only in that map is not enough to create the enhanced-block evaluation-graph ownership chain in DWG.
+
+**Release gate:** before exposing a Save/OK path for new dynamic blocks, implement and verify full binary serialization of the visibility object and its class/owner references in a version of the codec controlled by this fork, construct enhanced-block evaluation graph plus INSERT representation records, and demonstrate DWG reopen in OCS and AutoCAD. Do not write incomplete `ACAD_ENHANCEDBLOCK` data or silently downgrade a dynamic block to static geometry. Existing imported dynamic blocks must remain unaffected by unfinished authoring code.
+
+**Integration status:** `VisibilityAuthorDraft` and `BlockEditSession::begin_visibility_authoring` prepare geometry memberships, but there is no visual BEDIT authoring UI and no working native DWG create/save path yet. These helpers are not a functional end-to-end implementation.
+
