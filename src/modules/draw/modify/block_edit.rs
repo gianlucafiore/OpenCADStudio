@@ -78,6 +78,29 @@ pub struct BlockEditSession {
     pub editor_ucs: Option<codec::tables::Ucs>,
 }
 
+impl BlockEditSession {
+    /// Begin authoring a native visibility parameter for this actual BEDIT
+    /// definition, without touching the live DWG document yet.
+    /// Reject a stale block tab if its name now resolves to another record.
+    pub fn begin_visibility_authoring(
+        &self,
+        document: &codec::CadDocument,
+        parameter_name: &str,
+    ) -> Result<crate::scene::dynamic_visibility_authoring::VisibilityAuthorDraft,
+              crate::scene::dynamic_visibility_authoring::VisibilityAuthorError> {
+        use crate::scene::dynamic_visibility_authoring::{VisibilityAuthorDraft, VisibilityAuthorError};
+        let record = document.block_records.get(&self.block_name)
+            .ok_or_else(|| VisibilityAuthorError::UnknownBlock(self.block_name.clone()))?;
+        if record.handle != self.br_handle {
+            return Err(VisibilityAuthorError::UnknownBlock(self.block_name.clone()));
+        }
+        Ok(VisibilityAuthorDraft::new(
+            parameter_name,
+            record.entity_handles.clone(),
+        ))
+    }
+}
+
 // ── BEDIT pick command ─────────────────────────────────────────────────────
 
 /// Step 1: wait for the user to pick a single INSERT entity to edit.
