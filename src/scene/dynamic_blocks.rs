@@ -6,6 +6,42 @@
 use std::collections::HashMap;
 
 use super::named_parameters::{ParamError, ParameterTable};
+use codec::types::{Transform, Vector3};
+use codec::EntityType;
+
+/// Evaluate an INSERT's member geometry from fresh definition clones.
+///
+/// This never touches shared CadDocument entities. Callers can render or
+/// materialize the resulting block-local geometry separately; the DWG adapter
+/// must preserve proper native dynamic-block objects before saving.
+pub fn evaluate_member_geometry(
+    definition: &DynamicBlockDefinition,
+    instance: &DynamicBlockInstance,
+    members: &[(u64, EntityType)],
+) -> Result<Vec<(u64, EntityType)>, ParamError> {
+    let actions = definition.evaluate(instance)?;
+    let mut result = members.to_vec();
+    for action in actions {
+        if !action.value.is_finite() {
+            return Err(ParamError::Parse("nonfinite action transform".into()));
+        }
+        let transform = match action.kind {
+            BlockActionKind::MoveX => Transform::from_translation(Vector3::new(action.value, 0.0, 0.0)),
+            BlockActionKind::MoveY => Transform::from_translation(Vector3::new(0.0, action.value, 0.0)),
+            BlockActionKind::Rotate => Transform::from_rotation(Vector3::UNIT_Z, action.value),
+            BlockActionKind::ScaleUniform => Transform::from_scaling_with_origin(
+                Vector3::new(action.value, action.value, action.value), Vector3::new(0.0, 0.0, 0.0),
+            ),
+        };
+        for (handle, member) in &mut result {
+            if action.target_handles.contains(handle) {
+                codec::Entity::apply_transform(member, &transform);
+            }
+        }
+    }
+    Ok(result)
+}
+
 
 /// A behavior attached to a named parameter, evaluated relative to its
 /// definition-time value. Entity IDs are block-definition member handles.
@@ -212,4 +248,44 @@ mod tests {
         instance.set_override(&definition, "size", "3").unwrap();
         assert_eq!(definition.evaluate(&instance).unwrap()[0].value, 1.5);
     }
+    #[test]
+    fn geometry_is_independent_for_two_inserts() {
+        let definition = sample();
+        let source = codec::entities::Line {
+            start: Vector3::new(0.0, 0.0, 0.0),
+            end: Vector3::new(1.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let members = vec![(10, EntityType::Line(source.clone())), (12, EntityType::Line(source.clone()))];
+        let mut wide = DynamicBlockInstance::new(100);
+        wide.set_override(&definition, "width", "1.2").unwrap();
+        let narrow = DynamicBlockInstance::new(101);
+        let first = evaluate_member_geometry(&definition, &wide, &members).unwrap();
+        let second = evaluate_member_geometry(&definition, &narrow, &members).unwrap();
+        let EntityType::Line(ref moved) = first[0].1 else { panic!("expected line") };
+        let EntityType::Line(ref untouched) = second[0].1 else { panic!("expected line") };
+        assert!((moved.start.x - 0.3).abs() < 1e-9);
+        assert_eq!(untouched.start.x, 0.0);
+        let EntityType::Line(ref other) = first[1].1 else { panic!("expected line") };
+        assert_eq!(other.start.x, 0.0);
+        let EntityType::Line(ref original) = members[0].1 else { panic!("expected line") };
+        assert_eq!(original.start.x, 0.0);
+    }
+
+    #[test]
+    fn repeated_evaluation_does_not_accumulate_transforms() {
+        let definition = sample();
+        let members = vec![(10, EntityType::Line(codec::entities::Line {
+            start: Vector3::new(0.0, 0.0, 0.0),
+            end: Vector3::new(1.0, 0.0, 0.0),
+            ..Default::default()
+        }))];
+        let mut instance = DynamicBlockInstance::new(99);
+        instance.set_override(&definition, "width", "1.2").unwrap();
+        let once = evaluate_member_geometry(&definition, &instance, &members).unwrap();
+        let twice = evaluate_member_geometry(&definition, &instance, &members).unwrap();
+        let (EntityType::Line(a), EntityType::Line(b)) = (&once[0].1, &twice[0].1) else { panic!("expected lines") };
+        assert_eq!(a.start.x, b.start.x);
+    }
+
 }
