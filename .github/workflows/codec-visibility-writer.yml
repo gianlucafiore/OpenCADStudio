@@ -25,6 +25,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile patched codec
         run: |
-          cd codec
-          cargo check --workspace --exclude opencadcodec || true
-          cargo check -p opencadcodec
+          mv codec "$RUNNER_TEMP/opencadcodec-check"
+          cd "$RUNNER_TEMP/opencadcodec-check"
+          cargo check
