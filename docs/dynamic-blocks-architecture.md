@@ -49,3 +49,12 @@ This feature builds on OCS's existing parametric system. Do **not** add an indep
 - Visibility states imported from AutoCAD remain available.
 - Save/reopen in OCS retains dynamic behavior.
 - Save/reopen in AutoCAD exposes genuine dynamic grips/actions before claiming bidirectional compatibility.
+
+## Explicit dynamic-block declaration and UX
+
+- A block definition must expose an explicit **Dynamic block** status in BEDIT, the block manager and INSERT properties; do not infer dynamic status merely from parametric constraints.
+- The definition owns dynamic capabilities/behavior metadata; INSERT instances own distinct parameter values and evaluated geometry. Imported DWG dynamic definitions must be recognized from native dynamic metadata rather than an OCS-only flag.
+- Toggling on enables visual authoring of action-bound parameters. Toggling off must not silently discard existing actions or instance overrides: require an explicit conversion with undo and clear loss-of-behavior warning.
+- Consider states: conventional, OCS-authored dynamic, imported AutoCAD dynamic (possibly partially supported). A boolean UI toggle may be insufficient as persistence/interoperability status; keep provenance/capability diagnostics internally.
+- A dynamic block with zero actions may be in draft state; don't claim it's AutoCAD-compatible until native serialization and roundtrip are verified.
+- Prefer a subtle badge/icon on block lists and a simple type row in properties; avoid intrusive permanent panels.
