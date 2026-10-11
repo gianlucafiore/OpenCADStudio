@@ -33,10 +33,22 @@ pub fn evaluate_member_geometry(
             BlockActionKind::ScaleUniform => Transform::from_scaling_with_origin(
                 Vector3::new(action.value, action.value, action.value), Vector3::new(0.0, 0.0, 0.0),
             ),
+            BlockActionKind::StretchLineEndX | BlockActionKind::StretchLineEndY => Transform::identity(),
         };
         for (handle, member) in &mut result {
             if action.target_handles.contains(handle) {
-                codec::Entity::apply_transform(member, &transform);
+                match (action.kind, member) {
+                    (BlockActionKind::StretchLineEndX, EntityType::Line(line)) => {
+                        line.end.x += action.value;
+                    }
+                    (BlockActionKind::StretchLineEndY, EntityType::Line(line)) => {
+                        line.end.y += action.value;
+                    }
+                    (BlockActionKind::StretchLineEndX | BlockActionKind::StretchLineEndY, _) => {
+                        return Err(ParamError::Parse("LINE endpoint stretch requires LINE members".into()));
+                    }
+                    (_, entity) => codec::Entity::apply_transform(entity, &transform),
+                }
             }
         }
     }
@@ -59,6 +71,10 @@ pub enum BlockActionKind {
     MoveY,
     Rotate,
     ScaleUniform,
+    /// Stretch only the end vertex of LINE entities along X.
+    StretchLineEndX,
+    /// Stretch only the end vertex of LINE entities along Y.
+    StretchLineEndY,
 }
 
 /// An action's value computed without mutating shared block geometry.
@@ -129,7 +145,9 @@ impl DynamicBlockDefinition {
                 let value = match action.kind {
                     BlockActionKind::MoveX
                     | BlockActionKind::MoveY
-                    | BlockActionKind::Rotate => current - base,
+                    | BlockActionKind::Rotate
+                    | BlockActionKind::StretchLineEndX
+                    | BlockActionKind::StretchLineEndY => current - base,
                     BlockActionKind::ScaleUniform => {
                         if base.abs() < 1e-12 {
                             return Err(ParamError::DivisionByZero);
@@ -385,6 +403,47 @@ mod tests {
         instance.set_override(&definition, "size", "3").unwrap();
         assert_eq!(definition.evaluate(&instance).unwrap()[0].value, 1.5);
     }
+    #[test]
+    fn line_endpoint_stretch_preserves_anchor_and_other_insert() {
+        let mut definition = DynamicBlockDefinition::new("WINDOW");
+        definition.enabled = true;
+        definition.parameters.set("width", "1").unwrap();
+        definition.add_action(BlockAction {
+            parameter: "width".into(), target_handles: vec![15],
+            kind: BlockActionKind::StretchLineEndX,
+        }).unwrap();
+        let source = vec![(15, EntityType::Line(codec::entities::Line {
+            start: Vector3::new(5.0, 0.0, 0.0),
+            end: Vector3::new(6.0, 0.0, 0.0), ..Default::default()
+        }))];
+        let mut wide = DynamicBlockInstance::new(1);
+        wide.set_override(&definition, "width", "2.5").unwrap();
+        let normal = DynamicBlockInstance::new(2);
+        let evaluated = evaluate_member_geometry(&definition, &wide, &source).unwrap();
+        let reference = evaluate_member_geometry(&definition, &normal, &source).unwrap();
+        let EntityType::Line(changed) = &evaluated[0].1 else { panic!("line") };
+        let EntityType::Line(unchanged) = &reference[0].1 else { panic!("line") };
+        assert_eq!(changed.start.x, 5.0);
+        assert_eq!(changed.end.x, 7.5);
+        assert_eq!(unchanged.end.x, 6.0);
+    }
+
+    #[test]
+    fn stretch_rejects_unsupported_member_without_changing_source() {
+        let mut definition = DynamicBlockDefinition::new("BAD");
+        definition.enabled = true;
+        definition.parameters.set("width", "1").unwrap();
+        definition.add_action(BlockAction {
+            parameter: "width".into(), target_handles: vec![20],
+            kind: BlockActionKind::StretchLineEndY,
+        }).unwrap();
+        let source = vec![(20, EntityType::Circle(codec::entities::Circle::default()))];
+        let mut instance = DynamicBlockInstance::new(1);
+        instance.set_override(&definition, "width", "2").unwrap();
+        assert!(evaluate_member_geometry(&definition, &instance, &source).is_err());
+        assert!(matches!(source[0].1, EntityType::Circle(_)));
+    }
+
     #[test]
     fn geometry_is_independent_for_two_inserts() {
         let definition = sample();
