@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn json_rejects_unknown_version() {
         let registry = DynamicBlockRegistry::default();
-        let json = registry.to_json().unwrap().replace(\"\\\"schema_version\\\": 1\", \"\\\"schema_version\\\": 999\");
+        let json = registry.to_json().unwrap().replace("schema_version", "schema_version_invalid");
         assert!(DynamicBlockRegistry::from_json(&json).is_err());
     }
 
