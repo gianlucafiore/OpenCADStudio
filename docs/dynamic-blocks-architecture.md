@@ -1,3 +1,5 @@
+> **Implementation status (2026-10-11):** This document is an architecture proposal, not a description of shipped functionality. The earlier experimental `src/scene/dynamic_blocks.rs` action evaluator and its registration in `scene/mod.rs` were reverted because they duplicated the existing import/runtime infrastructure without providing usable BEDIT authoring or genuine DWG dynamic-block serialization. The next change should extend existing native visibility definitions and BEDIT authoring, with compile and roundtrip checks. No new dynamic-block editor is implemented on this branch yet.
+
 # Dynamic blocks: integration architecture
 
 This feature builds on OCS's existing parametric system. Do **not** add an independent parameter expression evaluator or constraint solver.
