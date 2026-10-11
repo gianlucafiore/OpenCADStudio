@@ -19,6 +19,7 @@ pub enum VisibilityAuthorError {
     UnknownMember(u64),
     DuplicateMember(u64),
     UnknownState(String),
+    UnknownBlock(String),
 }
 
 impl std::fmt::Display for VisibilityAuthorError {
@@ -182,6 +183,19 @@ pub struct VisibilityAuthorDraft {
 }
 
 impl VisibilityAuthorDraft {
+    /// Start authoring from an existing BEDIT block definition. Only the
+    /// definition's member handles are addressable: model-space selection
+    /// handles are deliberately excluded.
+    pub fn from_document_block(
+        document: &codec::CadDocument,
+        block_name: &str,
+        parameter_name: impl Into<String>,
+    ) -> Result<Self, VisibilityAuthorError> {
+        let record = document.block_records.get(block_name)
+            .ok_or_else(|| VisibilityAuthorError::UnknownBlock(block_name.to_owned()))?;
+        Ok(Self::new(parameter_name, record.entity_handles.clone()))
+    }
+
     pub fn new(name: impl Into<String>, members: Vec<Handle>) -> Self {
         Self {
             parameter_name: name.into(),
