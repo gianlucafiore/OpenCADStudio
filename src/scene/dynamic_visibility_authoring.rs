@@ -18,6 +18,7 @@ pub enum VisibilityAuthorError {
     DuplicateName(String),
     UnknownMember(u64),
     DuplicateMember(u64),
+    UnknownState(String),
 }
 
 impl std::fmt::Display for VisibilityAuthorError {
@@ -87,8 +88,118 @@ pub fn build_visibility_parameter(
     })
 }
 
+/// Rename one authored state, retaining its member set and insertion order.
+/// Names are unique case-insensitively just as during initial authoring.
+pub fn rename_visibility_state(
+    parameter: &mut BlockVisibilityParameter,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), VisibilityAuthorError> {
+    let renamed = new_name.trim();
+    if renamed.is_empty() {
+        return Err(VisibilityAuthorError::EmptyName);
+    }
+    let Some(index) = parameter.states.iter().position(|s| s.name == old_name) else {
+        return Err(VisibilityAuthorError::UnknownState(old_name.into()));
+    };
+    if parameter.states.iter().enumerate().any(|(i, s)| {
+        i != index && s.name.eq_ignore_ascii_case(renamed)
+    }) {
+        return Err(VisibilityAuthorError::DuplicateName(renamed.into()));
+    }
+    parameter.states[index].name = renamed.into();
+    Ok(())
+}
+
+/// Replace one state's visible members. Validation runs *before* mutation.
+/// Repeated selected handles are deduplicated, preserving their first order.
+pub fn set_visibility_state_members(
+    parameter: &mut BlockVisibilityParameter,
+    state_name: &str,
+    selected: &[Handle],
+) -> Result<(), VisibilityAuthorError> {
+    let Some(index) = parameter.states.iter().position(|s| s.name == state_name) else {
+        return Err(VisibilityAuthorError::UnknownState(state_name.into()));
+    };
+    let allowed: HashSet<u64> = parameter.all_blocks.iter().map(|h| h.value()).collect();
+    let mut unique = HashSet::new();
+    let mut members = Vec::new();
+    for handle in selected {
+        if !allowed.contains(&handle.value()) {
+            return Err(VisibilityAuthorError::UnknownMember(handle.value()));
+        }
+        if unique.insert(handle.value()) {
+            members.push(*handle);
+        }
+    }
+    parameter.states[index].visible_blocks = members;
+    Ok(())
+}
+
+/// Adds a state without changing which members belong to other states.
+pub fn add_visibility_state(
+    parameter: &mut BlockVisibilityParameter,
+    name: &str,
+    selected: &[Handle],
+) -> Result<(), VisibilityAuthorError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(VisibilityAuthorError::EmptyName);
+    }
+    if parameter.states.iter().any(|s| s.name.eq_ignore_ascii_case(trimmed)) {
+        return Err(VisibilityAuthorError::DuplicateName(trimmed.into()));
+    }
+    let mut draft = parameter.clone();
+    draft.states.push(BlockVisibilityState {name: trimmed.into(), ..Default::default()});
+    set_visibility_state_members(&mut draft, trimmed, selected)?;
+    *parameter = draft;
+    Ok(())
+}
+
+/// The last state cannot be deleted: otherwise the parameter has no choice.
+pub fn remove_visibility_state(
+    parameter: &mut BlockVisibilityParameter,
+    name: &str,
+) -> Result<(), VisibilityAuthorError> {
+    let Some(index) = parameter.states.iter().position(|s| s.name == name) else {
+        return Err(VisibilityAuthorError::UnknownState(name.into()));
+    };
+    if parameter.states.len() == 1 {
+        return Err(VisibilityAuthorError::NoStates);
+    }
+    parameter.states.remove(index);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authoring_edits_are_validated_and_atomic() {
+        let a = Handle::new(10);
+        let b = Handle::new(20);
+        let mut p = build_visibility_parameter("View", &[a,b], vec![
+            ("Plan".into(), vec![a]),
+            ("Elevation".into(), vec![b]),
+        ], codec::types::Vector3::new(0.0,0.0,0.0)).unwrap();
+        let original = p.clone();
+        assert_eq!(set_visibility_state_members(&mut p, "Plan", &[Handle::new(999)]),
+            Err(VisibilityAuthorError::UnknownMember(999)));
+        assert_eq!(p, original);
+        assert_eq!(rename_visibility_state(&mut p, "Plan", "elevation"),
+            Err(VisibilityAuthorError::DuplicateName("elevation".into())));
+        assert_eq!(p, original);
+        set_visibility_state_members(&mut p, "Plan", &[b, a, b]).unwrap();
+        assert_eq!(p.states[0].visible_blocks, vec![b,a]);
+        rename_visibility_state(&mut p, "Plan", "Floor plan").unwrap();
+        assert_eq!(p.states[0].name, "Floor plan");
+        add_visibility_state(&mut p, "Section", &[a]).unwrap();
+        assert_eq!(p.states.len(), 3);
+        remove_visibility_state(&mut p, "Section").unwrap();
+        remove_visibility_state(&mut p, "Elevation").unwrap();
+        assert_eq!(remove_visibility_state(&mut p, "Floor plan"), Err(VisibilityAuthorError::NoStates));
+    }
+
+
     use super::*;
 
     #[test]
