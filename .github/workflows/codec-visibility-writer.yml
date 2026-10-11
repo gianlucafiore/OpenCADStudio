@@ -20,8 +20,8 @@ jobs:
       - name: Validate and apply writer patch
         run: |
           cd codec
-          git apply --check ../patches/opencadcodec/visibility-writer.patch
-          git apply ../patches/opencadcodec/visibility-writer.patch
+          git apply --unidiff-zero --check ../patches/opencadcodec/visibility-writer.patch
+          git apply --unidiff-zero ../patches/opencadcodec/visibility-writer.patch
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile patched codec
         run: cargo check --manifest-path codec/Cargo.toml
