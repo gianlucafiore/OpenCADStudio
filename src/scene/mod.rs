@@ -34,6 +34,7 @@ pub(crate) mod dimension_assoc;
 pub(crate) mod dimension_assoc_chain;
 pub use dimension_assoc::{ReferenceStatus, ResolvedReference};
 pub use page_setup::{apply_default_page_setup, document_page_setups, rotated_margins};
+pub mod dynamic_blocks;
 mod dwg_native_constraints;
 mod entity;
 pub use entity::CreateBlockOptions;
