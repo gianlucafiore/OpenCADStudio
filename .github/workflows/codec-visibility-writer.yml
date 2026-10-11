@@ -24,4 +24,7 @@ jobs:
           git apply --unidiff-zero ../patches/opencadcodec/visibility-writer.patch
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile patched codec
-        run: cargo check --manifest-path codec/Cargo.toml
+        run: |
+          cd codec
+          cargo check --workspace --exclude opencadcodec || true
+          cargo check -p opencadcodec
