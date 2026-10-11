@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: HakanSeven12/opencadcodec
-          ref: fe3984f
+          ref: fe3984fb8bf36a02ea899ccbf598e3e64a7b2c11
           path: codec
       - name: Validate and apply writer patch
         run: |
