@@ -1,0 +1,27 @@
+name: Codec visibility writer patch
+on:
+  pull_request:
+    paths:
+      - 'patches/opencadcodec/**'
+      - '.github/workflows/codec-visibility-writer.yml'
+  workflow_dispatch:
+
+jobs:
+  visibility-writer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned codec source
+        uses: actions/checkout@v4
+        with:
+          repository: HakanSeven12/opencadcodec
+          ref: fe3984f
+          path: codec
+      - name: Validate and apply writer patch
+        run: |
+          cd codec
+          git apply --check ../patches/opencadcodec/visibility-writer.patch
+          git apply ../patches/opencadcodec/visibility-writer.patch
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile patched codec
+        run: cargo check --manifest-path codec/Cargo.toml
