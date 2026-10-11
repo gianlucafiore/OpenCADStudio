@@ -1,7 +1,7 @@
 diff --git a/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs b/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
 --- a/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
 +++ b/src/io/dwg/dwg_stream_writers/object_writer/dynamic_block.rs
-@@ -507,1 +507,55 @@
+@@ -507,1 +507,53 @@
 -            DynamicBlockData::VisibilityParameter(_) => return,
 +            DynamicBlockData::VisibilityParameter(value) => {
 +                // AcDbEvalExpr
