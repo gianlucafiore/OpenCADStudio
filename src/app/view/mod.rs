@@ -935,17 +935,32 @@ bg={bg_ms:.1}ms n={view_count}"
             // both are drawn — one guide alone hides what the point is (#1313).
             let otrack_lines: Vec<(iced::Point, iced::Point)> = match otrack_proj {
                 Some((view_rot, eye, ob)) => {
-                    let a = ost_project(tab.last_cursor_world, view_rot, eye, ob);
                     self.otrack_active
                         .into_iter()
                         .chain(self.otrack_cross)
-                        .filter_map(|(base, _dir)| {
+                        .filter_map(|(base, dir)| {
+                            // The guide's angle is defined by its acquired
+                            // geometric ray, not by the free cursor position.
+                            // Otherwise the drawn line pivots around its
+                            // origin whenever the cursor moves off the ray.
+                            let axis = dir.try_normalize()?;
                             let b = ost_project(base, view_rot, eye, ob);
-                            (b.x.is_finite()
-                                && b.y.is_finite()
-                                && a.x.is_finite()
-                                && a.y.is_finite())
-                            .then_some((b, a))
+                            let along = ost_project(base + axis * 1000.0, view_rot, eye, ob);
+                            let dx = along.x - b.x;
+                            let dy = along.y - b.y;
+                            let len = dx.hypot(dy);
+                            if !b.x.is_finite()
+                                || !b.y.is_finite()
+                                || !len.is_finite()
+                                || len <= 1e-5
+                            {
+                                return None;
+                            }
+                            let tip = iced::Point::new(
+                                b.x + dx / len * 100.0,
+                                b.y + dy / len * 100.0,
+                            );
+                            Some((b, tip))
                         })
                         .collect()
                 }
