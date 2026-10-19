@@ -1492,6 +1492,19 @@ impl OpenCADStudio {
     }
 
     pub(in crate::app) fn on_viewport_move(&mut self, p: Point) -> Task<Message> {
+        self.on_viewport_move_with_snap_query(p, false)
+    }
+
+    /// Regular pointer moves use density-bounded snap previews. Once the
+    /// pointer has settled, the idle dwell must resolve a *full* snap (and
+    /// display its yellow glyph) just as an exact click would. Calling the
+    /// budgeted motion path again on dwell left all dense-area snap markers
+    /// permanently invisible even though mouse clicks still snapped.
+    fn on_viewport_move_with_snap_query(
+        &mut self,
+        p: Point,
+        settled_full_snap: bool,
+    ) -> Task<Message> {
         crate::perf::note_pointer_move();
         // A ribbon dropdown is open over the viewport. Its backdrop
         // cannot swallow cursor motion — in iced 0.14 mouse_area/opaque
@@ -2922,7 +2935,7 @@ impl OpenCADStudio {
                         || cmd.is_selection_gathering()
                         || cmd.needs_structure_point_pick()
                 });
-                let candidates = if needs_entity_hover {
+                let candidates = if needs_entity_hover || settled_full_snap {
                     self.tabs[i].scene.interaction_candidates_near(
                         all_wires, snap_cursor, view_rot, eye, bounds,
                         self.snapper.osnap_radius_px,
@@ -7415,10 +7428,10 @@ properties={:.1}ms picked={}",
         // Resolve synchronously. Queuing ViewportMove here can replay this
         // old position AFTER a newer move/press and send the cursor backwards.
         self.snap_dwell = None;
-        // on_viewport_move re-arms the throttle with `snap_resolved = true`.
-        // Leave it armed so the next move doesn't immediately repeat this
-        // dense-scene snap synchronously.
-        self.on_viewport_move(dwell.point)
+        // Re-arm the resolved throttle, but skip the motion density budget
+        // for this settled pass. This restores actual snap glyphs on dense
+        // drawings and keeps the exact snap preview in sync with the click.
+        self.on_viewport_move_with_snap_query(dwell.point, true)
     }
     pub(in crate::app) fn prepare_interaction_index_task(
         &mut self,
