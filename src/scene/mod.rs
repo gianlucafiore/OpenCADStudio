@@ -10805,9 +10805,11 @@ impl Scene {
             // with thousands of overlapping snap features must not block UI
             // input; stationary dwell and button clicks still query ALL
             // candidates through SnapQueryCategory::Full.
-            if snap == Some(SnapQueryCategory::DiscretePreview)
-                && base.dense_snap_preview_xy(aabb)
-            {
+            if match snap {
+                Some(SnapQueryCategory::DiscretePreview) => base.dense_snap_preview_xy(aabb),
+                Some(SnapQueryCategory::MotionBudgetedFull) => base.dense_motion_snap_xy(aabb),
+                _ => false,
+            } {
                 return InteractionCandidates::pending(wires);
             }
             // Nothing changed since the base was indexed: query its own
@@ -10901,9 +10903,11 @@ impl Scene {
             return result;
         }
         if let Some(index) = self.cached_interaction_index(&wires) {
-            if snap == Some(SnapQueryCategory::DiscretePreview)
-                && index.dense_snap_preview_xy(aabb)
-            {
+            if match snap {
+                Some(SnapQueryCategory::DiscretePreview) => index.dense_snap_preview_xy(aabb),
+                Some(SnapQueryCategory::MotionBudgetedFull) => index.dense_motion_snap_xy(aabb),
+                _ => false,
+            } {
                 return InteractionCandidates::pending(wires);
             }
             direct(&index, wires)
@@ -10976,9 +10980,11 @@ impl Scene {
             None => index.query_screen(wires, screen_rect, view_rot, eye, bounds),
         };
         if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
-            if snap == Some(SnapQueryCategory::DiscretePreview)
-                && base.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds)
-            {
+            if match snap {
+                Some(SnapQueryCategory::DiscretePreview) => base.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds),
+                Some(SnapQueryCategory::MotionBudgetedFull) => base.dense_motion_snap_screen(screen_rect, view_rot, eye, bounds),
+                _ => false,
+            } {
                 return InteractionCandidates::pending(wires);
             }
             if changes.is_empty() {
@@ -11085,9 +11091,11 @@ impl Scene {
             return result;
         }
         if let Some(index) = self.cached_interaction_index(&wires) {
-            if snap == Some(SnapQueryCategory::DiscretePreview)
-                && index.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds)
-            {
+            if match snap {
+                Some(SnapQueryCategory::DiscretePreview) => index.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds),
+                Some(SnapQueryCategory::MotionBudgetedFull) => index.dense_motion_snap_screen(screen_rect, view_rot, eye, bounds),
+                _ => false,
+            } {
                 return InteractionCandidates::pending(wires);
             }
             direct(&index, wires)
@@ -11242,6 +11250,31 @@ impl Scene {
             false,
             false,
             Some(SnapQueryCategory::Full),
+        )
+    }
+
+    /// Full OSNAP modes for a moving cursor, but with a bounded dense-area
+    /// lookup. It intentionally excludes entity selection and authoritative
+    /// button clicks. On cursor dwell the regular Full query runs instead.
+    pub fn interaction_motion_snap_candidates_near(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        self.interaction_candidates_near_impl(
+            wires,
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            radius_px,
+            false,
+            true,
+            Some(SnapQueryCategory::MotionBudgetedFull),
         )
     }
 
