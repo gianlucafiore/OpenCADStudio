@@ -16140,3 +16140,40 @@ pub(crate) fn is_locked_point_cloud(entity: &EntityType) -> bool {
             if matches!(&extended.data, codec::entities::ExtendedEntityData::PointCloudEx(data) if data.locked)
     )
 }
+
+#[cfg(test)]
+mod dense_cursor_snap_budget_tests {
+    use super::*;
+    use crate::scene::model::wire_model::SnapHint;
+
+    #[test]
+    fn dense_cursor_preview_defers_but_exact_snap_keeps_all_features() {
+        let scene = Scene::new();
+        let mut models = Vec::new();
+        for i in 0..1_000 {
+            let mut wire = WireModel::solid(
+                i.to_string(),
+                vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                [0.8, 0.8, 0.8, 1.0],
+                false,
+            );
+            wire.snap_pts.push((glam::DVec3::ZERO, SnapHint::Node));
+            models.push(wire);
+        }
+        let wires = Arc::new(models);
+        let index = Arc::new(InteractionIndex::build(&wires));
+        scene.cache_interaction_index(scene.geometry_epoch, Arc::clone(&wires), index);
+        let aperture = [-0.1, -0.1, 0.1, 0.1];
+
+        let query = |category| {
+            scene.indexed_interaction_candidates_xy_stubbed(
+                Arc::clone(&wires), aperture, true, false, Some(category),
+            )
+        };
+        assert_eq!(query(SnapQueryCategory::DiscretePreview).len(), 0);
+        assert_eq!(query(SnapQueryCategory::MotionBudgetedFull).len(), 0);
+        let click = query(SnapQueryCategory::Full);
+        assert_eq!(click.snap_points().unwrap().len(), 1_000);
+        assert_eq!(click.len(), 1_000);
+    }
+}
