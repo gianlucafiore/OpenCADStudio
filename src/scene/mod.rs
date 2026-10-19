@@ -10801,6 +10801,15 @@ impl Scene {
             None => index.query_xy(wires, aabb),
         };
         if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
+            // The live cursor preview has a strict work budget. An aperture
+            // with thousands of overlapping snap features must not block UI
+            // input; stationary dwell and button clicks still query ALL
+            // candidates through SnapQueryCategory::Full.
+            if snap == Some(SnapQueryCategory::DiscretePreview)
+                && base.dense_snap_preview_xy(aabb)
+            {
+                return InteractionCandidates::pending(wires);
+            }
             // Nothing changed since the base was indexed: query its own
             // snapshot instead of gathering an overlay copy.
             if changes.is_empty() {
@@ -10892,6 +10901,11 @@ impl Scene {
             return result;
         }
         if let Some(index) = self.cached_interaction_index(&wires) {
+            if snap == Some(SnapQueryCategory::DiscretePreview)
+                && index.dense_snap_preview_xy(aabb)
+            {
+                return InteractionCandidates::pending(wires);
+            }
             direct(&index, wires)
         } else {
             self.unindexed_interaction_candidates(wires, allow_pending_empty, snap)
@@ -10962,6 +10976,11 @@ impl Scene {
             None => index.query_screen(wires, screen_rect, view_rot, eye, bounds),
         };
         if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
+            if snap == Some(SnapQueryCategory::DiscretePreview)
+                && base.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds)
+            {
+                return InteractionCandidates::pending(wires);
+            }
             if changes.is_empty() {
                 if let Some(source) = self.interaction_source_for_index(base_epoch, &base) {
                     return direct(&base, source);
@@ -11066,6 +11085,11 @@ impl Scene {
             return result;
         }
         if let Some(index) = self.cached_interaction_index(&wires) {
+            if snap == Some(SnapQueryCategory::DiscretePreview)
+                && index.dense_snap_preview_screen(screen_rect, view_rot, eye, bounds)
+            {
+                return InteractionCandidates::pending(wires);
+            }
             direct(&index, wires)
         } else {
             self.unindexed_interaction_candidates(wires, allow_pending_empty, snap)
