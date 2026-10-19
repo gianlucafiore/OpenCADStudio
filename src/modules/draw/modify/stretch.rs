@@ -570,7 +570,7 @@ impl CadCommand for StretchCommand {
             // treat its complete bounds as the stretch window.
             if self.windows.is_empty() {
                 if let Some((win_min, win_max)) = self.selection_bounds() {
-                    self.windows.push((win_min, win_max));
+                    self.windows.push(StretchWindow::add(win_min, win_max));
                 }
             }
 
