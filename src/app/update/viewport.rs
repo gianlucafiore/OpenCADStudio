@@ -73,6 +73,56 @@ mod command_candidate_gate_tests {
     }
 }
 
+/// Reuse a discrete snap marker when a density-limited live sample did
+/// not find a replacement. The stored marker is already in canvas pixels;
+/// move-time snap evaluation expects tile-local pixels and translates them
+/// to canvas space exactly once later on. Never retain a continuous snap
+/// (Nearest, Perpendicular, Tangent, Extension, etc.) that depends on the
+/// current cursor or drawing direction.
+fn retained_discrete_snap(
+    previous: Option<crate::snap::SnapResult>,
+    cursor_canvas: Point,
+    tile_origin: Point,
+    snapper: &crate::snap::Snapper,
+) -> Option<crate::snap::SnapResult> {
+    use crate::snap::SnapType;
+
+    let mut snap = previous?;
+    if !matches!(
+        snap.snap_type,
+        SnapType::Endpoint
+            | SnapType::Midpoint
+            | SnapType::Center
+            | SnapType::GeometricCenter
+            | SnapType::Node
+            | SnapType::Quadrant
+            | SnapType::Insertion
+            | SnapType::Vertex
+            | SnapType::EdgeMidpoint
+            | SnapType::FaceCenter
+            | SnapType::Knot
+    ) {
+        return None;
+    }
+    let enabled = if snap.snap_type.is_3d() {
+        snapper.is_on_3d(snap.snap_type)
+    } else {
+        snapper.is_active() && snapper.is_on(snap.snap_type)
+    };
+    if !enabled {
+        return None;
+    }
+    let dx = snap.screen.x - cursor_canvas.x;
+    let dy = snap.screen.y - cursor_canvas.y;
+    let radius = snapper.osnap_radius_px;
+    if !dx.is_finite() || !dy.is_finite() || dx * dx + dy * dy > radius * radius {
+        return None;
+    }
+    snap.screen.x -= tile_origin.x;
+    snap.screen.y -= tile_origin.y;
+    Some(snap)
+}
+
 /// Pixel radius for grabbing a UCS-icon grip (origin dot or an axis tip).
 const UCS_GRIP_HIT_PX: f32 = 9.0;
 /// Pixel reach for hovering/clicking the icon body (origin, tips, or an arm).
@@ -2816,17 +2866,22 @@ impl OpenCADStudio {
                     }
                 }
                 snap
-            } else if discrete_preview_enabled {
-                // Keep the previous marker only while it is still inside the
-                // current aperture. This avoids flicker between throttled
-                // samples without showing a snap that is no longer nearby.
-                self.tabs[i].snap_result.filter(|hit| {
-                    let dx = hit.screen.x - p_full.x;
-                    let dy = hit.screen.y - p_full.y;
-                    dx * dx + dy * dy <= self.snapper.osnap_radius_px.powi(2)
-                })
             } else {
                 None
+            };
+            // Adaptive density queries may return no candidate on alternate
+            // samples. Preserve an already valid nearby discrete marker,
+            // including across sampled updates, so it does not blink on/off.
+            // This is only the visual preview; exact clicks recalculate snap.
+            let snap = if snap.is_none() && discrete_preview_enabled {
+                retained_discrete_snap(
+                    self.tabs[i].snap_result,
+                    p_full,
+                    Point::new(tile_b.x, tile_b.y),
+                    &self.snapper,
+                )
+            } else {
+                snap
             };
             let world = snap.map_or(cursor_world, |hit| hit.world);
             self.tabs[i].last_cursor_world = world;
@@ -3037,6 +3092,7 @@ impl OpenCADStudio {
                     )
                 })
                 .flatten();
+            let previous_snap = self.tabs[i].snap_result;
             let snap_started = perf_move.then(Instant::now);
             self.tabs[i].snap_result = if (needs_entity && !entity_pick_takes_points)
                 || is_gathering
@@ -3132,6 +3188,24 @@ impl OpenCADStudio {
                 ) {
                     self.tabs[i].snap_result = Some(snap);
                 }
+            }
+            // The full-motion path (OTRACK, Ortho, Polar) may also get an
+            // intentionally empty density-budgeted query. Do not discard a
+            // previously displayed endpoint/node while it remains within
+            // the original OSNAP aperture. A settled full query supersedes
+            // this fallback and may clear the marker normally.
+            if deferred_dense_motion
+                && !settled_full_snap
+                && wants_point
+                && !is_window_corner
+                && self.tabs[i].snap_result.is_none()
+            {
+                self.tabs[i].snap_result = retained_discrete_snap(
+                    previous_snap,
+                    p_full,
+                    Point::new(tile_b.x, tile_b.y),
+                    &self.snapper,
+                );
             }
 
             // Paper-space snapping through layout viewports. `edit_cam`
@@ -8272,6 +8346,61 @@ mod rapid_drawing_tests {
                 assert_eq!(entities.len(), if command == "LINE" { 3 } else { 1 });
             }
         }
+    }
+
+    #[test]
+    fn dense_snap_marker_is_stable_without_double_canvas_translation() {
+        use crate::snap::{SnapResult, SnapType};
+
+        let snapper = crate::snap::Snapper::default();
+        let saved = SnapResult {
+            world: glam::DVec3::new(40.0, 25.0, 0.0),
+            screen: Point::new(110.0, 115.0),
+            snap_type: SnapType::Endpoint,
+            tangent_obj: None,
+            extension_base: None,
+            extension_base2: None,
+            extension_origin: None,
+            extension_dir: None,
+            viewport: None,
+            source: None,
+            secondary_source: None,
+            model_point: None,
+        };
+        let origin = Point::new(30.0, 40.0);
+        let cursor = Point::new(112.0, 116.0);
+        let local = retained_discrete_snap(Some(saved), cursor, origin, &snapper)
+            .expect("endpoint is still near the cursor");
+        assert_eq!(local.screen, Point::new(80.0, 75.0));
+        // The normal canvas conversion must recover the original position,
+        // not add tile offsets repeatedly and make the marker drift.
+        let canvas = Point::new(local.screen.x + origin.x, local.screen.y + origin.y);
+        assert_eq!(canvas, saved.screen);
+    }
+
+    #[test]
+    fn stale_or_continuous_snap_is_not_kept_during_dense_preview() {
+        use crate::snap::{SnapResult, SnapType};
+        let mut snapper = crate::snap::Snapper::default();
+        let hit = SnapResult {
+            world: glam::DVec3::ZERO,
+            screen: Point::new(100.0, 100.0),
+            snap_type: SnapType::Endpoint,
+            tangent_obj: None,
+            extension_base: None,
+            extension_base2: None,
+            extension_origin: None,
+            extension_dir: None,
+            viewport: None,
+            source: None,
+            secondary_source: None,
+            model_point: None,
+        };
+        let origin = Point::new(0.0, 0.0);
+        assert!(retained_discrete_snap(Some(hit), Point::new(200.0, 200.0), origin, &snapper).is_none());
+        assert!(retained_discrete_snap(Some(SnapResult { snap_type: SnapType::Nearest, ..hit }), hit.screen, origin, &snapper).is_none());
+        snapper.snap_enabled = false;
+        assert!(retained_discrete_snap(Some(hit), hit.screen, origin, &snapper).is_none());
     }
 
     #[test]
