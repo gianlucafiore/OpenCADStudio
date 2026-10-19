@@ -3276,6 +3276,18 @@ impl OpenCADStudio {
                 bounds,
                 Instant::now(),
             );
+            // Dense-scene previews can produce just one successful endpoint
+            // observation before the cursor stops. A second authoritative
+            // pass is scheduled only at the 250ms acquisition deadline. Use
+            // the complete indexed candidates already fetched for that pass
+            // to capture the edge direction required by Extension.
+            if settled_full_snap && self.snapper.stationary_tracking_due(Instant::now()) {
+                self.snapper.acquire_stationary_tracking(
+                    self.tabs[i].snap_result,
+                    &snap_candidates,
+                    Instant::now(),
+                );
+            }
             self.snapper.update_parallel(
                 cursor_world,
                 &snap_candidates,
@@ -7525,7 +7537,13 @@ properties={:.1}ms picked={}",
         let Some(dwell) = self.snap_dwell.clone() else {
             return Task::none();
         };
-        if dwell.snap_resolved && !dwell.preview_dirty {
+        if dwell.snap_resolved
+            && !dwell.preview_dirty
+            && !self.snapper.stationary_tracking_due(Instant::now())
+        {
+            // The marker may already be settled but Extension/OTRACK still
+            // needs an endpoint direction. Wait until its 250ms deadline
+            // without performing additional dense-scene snap queries.
             return Task::none();
         }
         // Re-check the gate — command may have ended or the tab changed
