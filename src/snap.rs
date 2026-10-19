@@ -4434,6 +4434,31 @@ mod ext_tests {
         assert!(!snapper.tracking_dirs[0].is_empty(), "Extension requires the outward edge direction");
         assert!(!snapper.stationary_tracking_pending(), "do not run repeated expensive queries");
         assert!(!snapper.acquire_stationary_tracking(Some(snap), &wires, Instant::now()));
+
+        // The ray must remain usable after the source segment leaves the
+        // cursor-local query entirely (the dense motion query can be empty).
+        let no_wires: [WireModel; 0] = [];
+        let bounds = Rectangle {
+            x: 0.0, y: 0.0, width: 200.0, height: 200.0,
+        };
+        let view = Mat4::from_scale(Vec3::splat(0.02));
+        let target = DVec3::new(15.0, 0.0, 0.0);
+        let hit = snapper.snap(
+            target,
+            Point::new(130.0, 100.0),
+            &no_wires,
+            view,
+            DVec3::ZERO,
+            bounds,
+            Vec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            None,
+        );
+        assert!(
+            hit.is_some_and(|hit| hit.snap_type == SnapType::Extension
+                && (hit.world - target).length() < 1e-9),
+            "Extension should snap on the cached outward ray even with zero nearby wires"
+        );
     }
 
     #[test]
