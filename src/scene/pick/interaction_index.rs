@@ -755,16 +755,18 @@ pub(crate) struct SnapCandidateParts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SnapQueryCategory {
     DiscretePreview,
+    /// Full modes, but density-bounded during mouse motion.
+    MotionBudgetedFull,
     Full,
 }
 
 impl SnapQueryCategory {
     fn includes_general_wires(self) -> bool {
-        matches!(self, Self::Full)
+        matches!(self, Self::Full | Self::MotionBudgetedFull)
     }
 
     fn includes_continuous_segments(self) -> bool {
-        matches!(self, Self::Full)
+        matches!(self, Self::Full | Self::MotionBudgetedFull)
     }
 }
 
@@ -962,6 +964,22 @@ impl InteractionIndex {
         self.snap_points.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
             || self.key_vertices.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
             || self.key_segments.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
+    }
+
+    /// Moving-cursor continuous OSNAP and OTRACK need a bounded search too.
+    /// The original Full query still runs after dwell or on the actual click.
+    pub(crate) fn dense_motion_snap_xy(&self, aabb: [f64; 4]) -> bool {
+        let limit = Self::SNAP_PREVIEW_FEATURE_BUDGET;
+        self.dense_snap_preview_xy(aabb)
+            || self.wires.exceeds_preview_budget_xy(aabb, limit)
+            || self.segments.exceeds_preview_budget_xy(aabb, limit)
+    }
+
+    pub(crate) fn dense_motion_snap_screen(&self, rect: [f32; 4], view: Mat4, eye: DVec3, bounds: Rectangle) -> bool {
+        let limit = Self::SNAP_PREVIEW_FEATURE_BUDGET;
+        self.dense_snap_preview_screen(rect, view, eye, bounds)
+            || self.wires.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
+            || self.segments.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
     }
 
     pub fn estimated_work(wires: &[WireModel]) -> usize {
@@ -2649,7 +2667,9 @@ mod area_query_tests {
         let index = InteractionIndex::build(&wires);
         let near = [-0.1, -0.1, 0.1, 0.1];
         assert!(index.dense_snap_preview_xy(near));
+        assert!(index.dense_motion_snap_xy(near));
         assert!(!index.dense_snap_preview_xy([100.0, 100.0, 101.0, 101.0]));
+        assert!(!index.dense_motion_snap_xy([100.0, 100.0, 101.0, 101.0]));
         // Dense does NOT truncate the authoritative full query.
         let exact = index.query_snap_xy_with_category(wires, near, SnapQueryCategory::Full);
         assert_eq!(exact.snap_points().unwrap().len(), 1_000);
