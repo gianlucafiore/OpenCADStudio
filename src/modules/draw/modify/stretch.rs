@@ -718,6 +718,34 @@ mod shift_stretch_tests {
     }
 
     #[test]
+    fn shift_excludes_one_polyline_vertex_without_dropping_neighbours() {
+        use codec::entities::{LwPolyline, LwVertex};
+        use codec::types::Vector2;
+
+        let mut polyline = LwPolyline::new();
+        polyline.vertices = [0.0, 10.0, 20.0]
+            .into_iter()
+            .map(|x| LwVertex::new(Vector2::new(x, 0.0)))
+            .collect();
+        let windows = [
+            region(-1.0, -1.0, 21.0, 1.0, false),
+            region(9.0, -1.0, 11.0, 1.0, true),
+        ];
+        let mut entity = EntityType::LwPolyline(polyline);
+        assert!(stretch_entity(
+            &mut entity,
+            &windows,
+            DVec3::new(0.0, 3.0, 0.0),
+        ));
+        let EntityType::LwPolyline(after) = entity else {
+            panic!("expected LW polyline");
+        };
+        assert_eq!(after.vertices[0].location.y, 3.0);
+        assert_eq!(after.vertices[1].location.y, 0.0);
+        assert_eq!(after.vertices[2].location.y, 3.0);
+    }
+
+    #[test]
     fn shifted_opposite_corner_records_a_subtractive_selection() {
         let mut cmd = StretchCommand::new(Vec::new(), Vec::new());
         assert!(matches!(cmd.on_point(DVec3::new(-1.0, -1.0, 0.0)), CmdResult::NeedPoint));
