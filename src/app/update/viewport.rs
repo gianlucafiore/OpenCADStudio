@@ -2913,14 +2913,26 @@ impl OpenCADStudio {
                 let hit_test_ms = crate::perf::elapsed_ms(hit_test_started);
                 let all_wire_count = all_wires.len();
                 let candidate_started = perf_move.then(Instant::now);
-                let candidates = self.tabs[i].scene.interaction_candidates_near(
-                    all_wires,
-                    snap_cursor,
-                    view_rot,
-                    eye,
-                    bounds,
-                    self.snapper.osnap_radius_px,
-                );
+                // Live drawing snaps (even with OTRACK/Ortho/Polar) must not
+                // enumerate thousands of overlapping primitives on every
+                // mouse event. Entity selection keeps its ordinary picker;
+                // mouse dwell and exact click paths always stay unbounded.
+                let needs_entity_hover = self.tabs[i].active_cmd.as_ref().is_some_and(|cmd| {
+                    cmd.needs_entity_pick()
+                        || cmd.is_selection_gathering()
+                        || cmd.needs_structure_point_pick()
+                });
+                let candidates = if needs_entity_hover {
+                    self.tabs[i].scene.interaction_candidates_near(
+                        all_wires, snap_cursor, view_rot, eye, bounds,
+                        self.snapper.osnap_radius_px,
+                    )
+                } else {
+                    self.tabs[i].scene.interaction_motion_snap_candidates_near(
+                        all_wires, snap_cursor, view_rot, eye, bounds,
+                        self.snapper.osnap_radius_px,
+                    )
+                };
                 let candidate_ms = crate::perf::elapsed_ms(candidate_started);
                 if perf_move && (hit_test_ms >= 1.0 || candidate_ms >= 1.0) {
                     crate::perf_record!(
