@@ -361,12 +361,21 @@ pub fn stretch(
     win_max: glam::DVec3,
     delta: glam::DVec3,
 ) -> bool {
+    stretch_where(vp, |x, y| x >= win_min.x && x <= win_max.x && y >= win_min.y && y <= win_max.y, delta)
+}
+
+/// STRETCH can accumulate both additive and Shift-subtractive windows.
+/// Accept the final per-corner selection, rather than reshaping separately
+/// for every window (which can move a corner twice).
+pub fn stretch_where(
+    vp: &mut Viewport,
+    inside: impl Fn(f64, f64) -> bool,
+    delta: glam::DVec3,
+) -> bool {
     let hw = vp.width * 0.5;
     let hh = vp.height * 0.5;
     let (left, right) = (vp.center.x - hw, vp.center.x + hw);
     let (bottom, top) = (vp.center.y - hh, vp.center.y + hh);
-    let inside =
-        |x: f64, y: f64| x >= win_min.x && x <= win_max.x && y >= win_min.y && y <= win_max.y;
 
     let bottom_left = inside(left, bottom);
     let bottom_right = inside(right, bottom);
