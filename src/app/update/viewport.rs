@@ -3574,6 +3574,21 @@ impl OpenCADStudio {
                     .map(|c| c.on_preview_wires_with_tangent(effective, live_tangent))
                     .unwrap_or_default()
             };
+            // Some commands (notably STRETCH) replace their original
+            // resident geometry with freshly tessellated edited copies. The
+            // ordinary point-preview path above builds only wire previews;
+            // without these entity previews, hidden STRETCH sources vanish
+            // and only the rubber band survives until snap dwell refreshes.
+            // The structure-pick path already did this work.
+            if !needs_structure {
+                let tab = &mut self.tabs[i];
+                if let Some(cmd) = tab.active_cmd.as_mut() {
+                    if !cmd.preview_hidden_handles().is_empty() {
+                        let entities = cmd.preview_entities(&tab.scene.document, effective);
+                        previews.extend(tab.scene.wires_for_entities(&entities));
+                    }
+                }
+            }
             // Polar tracking guide line: dotted line from last_point along
             // the snapped angle direction, extending across the drawing.
             if self.polar_mode && !needs_entity {
