@@ -107,6 +107,35 @@ impl SpatialBvh2 {
             }
         }
     }
+
+    /// A cheap bounded count for dense cursor previews. Unlike query(), this
+    /// never allocates/sorts thousands of matching geometry references.
+    fn exceeds_budget<T>(&self, entries: &[Entry3<T>], query: [f64; 4], remaining: &mut usize) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack = vec![0u32];
+        while let Some(node_idx) = stack.pop() {
+            let node = self.nodes[node_idx as usize];
+            if !aabb_overlaps(node.aabb, query) {
+                continue;
+            }
+            if node.left == u32::MAX {
+                for &idx in &self.order[node.start as usize..(node.start + node.len) as usize] {
+                    if aabb_overlaps(entry_aabb2(&entries[idx as usize]), query) {
+                        if *remaining == 0 {
+                            return true;
+                        }
+                        *remaining -= 1;
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+        false
+    }
 }
 
 fn build_bvh2_node<T>(
@@ -212,6 +241,33 @@ impl SpatialBvh3 {
         entry_indices.sort_unstable();
         entry_indices.dedup();
         entry_indices
+    }
+
+    fn exceeds_budget<T>(&self, entries: &[Entry3<T>], rect: [f32; 4], view: Mat4, eye: DVec3, bounds: Rectangle, remaining: &mut usize) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack = vec![0u32];
+        while let Some(node_idx) = stack.pop() {
+            let node = self.nodes[node_idx as usize];
+            if !aabb3_projects_into(node.aabb, rect, view, eye, bounds) {
+                continue;
+            }
+            if node.left == u32::MAX {
+                for &idx in &self.order[node.start as usize..(node.start + node.len) as usize] {
+                    if aabb3_projects_into(entries[idx as usize].aabb, rect, view, eye, bounds) {
+                        if *remaining == 0 {
+                            return true;
+                        }
+                        *remaining -= 1;
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+        false
     }
 }
 
@@ -457,6 +513,42 @@ impl SpatialGrid {
         }
     }
 
+    /// Conservative upper-bound on snap features in the cursor aperture.
+    /// Counts referenced grid cells without collecting and sorting their
+    /// contents; if the aperture is too crowded, preview can wait until the
+    /// mouse settles. No such budget is applied to the authoritative click.
+    fn exceeds_preview_budget<T>(&self, entries: &[Entry3<T>], query: [f64; 4], limit: usize) -> bool {
+        let mut remaining = limit;
+        if self.oversized.exceeds_budget(entries, query, &mut remaining) {
+            return true;
+        }
+        let grid_max_x = self.min[0] + self.cols as f64 * self.cell;
+        let grid_max_y = self.min[1] + self.rows as f64 * self.cell;
+        if query[2] < self.min[0] || query[3] < self.min[1]
+            || query[0] > grid_max_x || query[1] > grid_max_y
+        {
+            return false;
+        }
+        let col = |x: f64| {
+            (((x - self.min[0]) / self.cell).floor()).clamp(0.0, (self.cols - 1) as f64) as u32
+        };
+        let row = |y: f64| {
+            (((y - self.min[1]) / self.cell).floor()).clamp(0.0, (self.rows - 1) as f64) as u32
+        };
+        for r in row(query[1])..=row(query[3]) {
+            let base = r as usize * self.cols as usize;
+            for c in col(query[0])..=col(query[2]) {
+                let idx = base + c as usize;
+                let count = (self.cell_offsets[idx + 1] - self.cell_offsets[idx]) as usize;
+                if count > remaining {
+                    return true;
+                }
+                remaining -= count;
+            }
+        }
+        false
+    }
+
     fn query_unordered<T: Copy>(&self, entries: &[Entry3<T>], query: [f64; 4]) -> Vec<T> {
         let mut indices = Vec::new();
         self.oversized.query(entries, query, &mut indices);
@@ -573,6 +665,16 @@ impl<T: Copy + Ord + Sync> SpatialSet<T> {
 
     fn query_xy(&self, aabb: [f64; 4]) -> Vec<T> {
         self.xy.query(&self.entries, aabb)
+    }
+
+    fn exceeds_preview_budget_xy(&self, aabb: [f64; 4], limit: usize) -> bool {
+        self.xy.exceeds_preview_budget(&self.entries, aabb, limit)
+    }
+
+    fn exceeds_preview_budget_screen(&self, rect: [f32; 4], view: Mat4, eye: DVec3, bounds: Rectangle, limit: usize) -> bool {
+        let mut remaining = limit;
+        self.xyz.get_or_init(|| SpatialBvh3::build(&self.entries))
+            .exceeds_budget(&self.entries, rect, view, eye, bounds, &mut remaining)
     }
 
     /// See [`SpatialGrid::query_unordered`] — same set, no sort, duplicates in.
@@ -843,6 +945,25 @@ impl InteractionHandleIndex {
 }
 
 impl InteractionIndex {
+    /// Live snap preview must not materialize 20k overlapping references
+    /// on every pointer event. Dense apertures resolve fully on mouse dwell
+    /// and on exact clicks; ordinary, sparse apertures keep live snaps.
+    const SNAP_PREVIEW_FEATURE_BUDGET: usize = 768;
+
+    pub(crate) fn dense_snap_preview_xy(&self, aabb: [f64; 4]) -> bool {
+        let limit = Self::SNAP_PREVIEW_FEATURE_BUDGET;
+        self.snap_points.exceeds_preview_budget_xy(aabb, limit)
+            || self.key_vertices.exceeds_preview_budget_xy(aabb, limit)
+            || self.key_segments.exceeds_preview_budget_xy(aabb, limit)
+    }
+
+    pub(crate) fn dense_snap_preview_screen(&self, rect: [f32; 4], view: Mat4, eye: DVec3, bounds: Rectangle) -> bool {
+        let limit = Self::SNAP_PREVIEW_FEATURE_BUDGET;
+        self.snap_points.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
+            || self.key_vertices.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
+            || self.key_segments.exceeds_preview_budget_screen(rect, view, eye, bounds, limit)
+    }
+
     pub fn estimated_work(wires: &[WireModel]) -> usize {
         wires.iter().fold(0usize, |total, wire| {
             total
@@ -2515,6 +2636,23 @@ mod area_query_tests {
             remapped.source_wire(0).map(|wire| wire.name.as_str()),
             Some("9")
         );
+    }
+
+    #[test]
+    fn crowded_preview_is_deferred_without_losing_exact_click_candidates() {
+        use crate::scene::model::wire_model::SnapHint;
+        let wires: Arc<Vec<WireModel>> = Arc::new((0..1_000).map(|i| {
+            let mut wire = wire(&i.to_string(), vec![], [-0.05, -0.05, 0.05, 0.05]);
+            wire.snap_pts = vec![(glam::DVec3::ZERO, SnapHint::Node)];
+            wire
+        }).collect());
+        let index = InteractionIndex::build(&wires);
+        let near = [-0.1, -0.1, 0.1, 0.1];
+        assert!(index.dense_snap_preview_xy(near));
+        assert!(!index.dense_snap_preview_xy([100.0, 100.0, 101.0, 101.0]));
+        // Dense does NOT truncate the authoritative full query.
+        let exact = index.query_snap_xy_with_category(wires, near, SnapQueryCategory::Full);
+        assert_eq!(exact.snap_points().unwrap().len(), 1_000);
     }
 
     #[test]
