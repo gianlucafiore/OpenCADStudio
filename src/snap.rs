@@ -731,6 +731,82 @@ impl Snapper {
             }
         }
     }
+    /// An endpoint observed by the authoritative settled snap still needs a
+    /// second, 250-ms acquisition check for OTRACK/Extension. On dense drawings
+    /// the live motion pass can defer every sample, so the old requirement of
+    /// three successful mouse-motion observations may never be reached.
+    /// Scheduling this separate check does NOT require full geometric queries
+    /// on every frame; the viewport makes one additional full query when due.
+    pub fn stationary_tracking_pending(&self) -> bool {
+        self.tracking_active()
+            && self.last_snap_world.is_some()
+            && self.dwell_since.is_some()
+            && !self.dwell_acquired
+    }
+
+    pub fn stationary_tracking_due(&self, now: Instant) -> bool {
+        const ACQUIRE_AFTER_MS: u128 = 250;
+        self.stationary_tracking_pending()
+            && self
+                .dwell_since
+                .is_some_and(|start| now.duration_since(start).as_millis() >= ACQUIRE_AFTER_MS)
+    }
+
+    /// Confirm one stationary endpoint using the FULL indexed candidate set.
+    /// This captures incident segment directions exactly once, so Extension
+    /// retains its tracking ray after the cursor moves away. The regular
+    /// multi-observation path is still used during ordinary cursor movement.
+    pub fn acquire_stationary_tracking<W: WireSource + ?Sized>(
+        &mut self,
+        snap: Option<SnapResult>,
+        wires: &W,
+        now: Instant,
+    ) -> bool {
+        if !self.stationary_tracking_due(now) {
+            return false;
+        }
+        let (Some(point), Some(hit)) = (self.last_snap_world, snap) else {
+            return false;
+        };
+        let eligible = matches!(
+            hit.snap_type,
+            SnapType::Endpoint
+                | SnapType::Midpoint
+                | SnapType::Center
+                | SnapType::Node
+                | SnapType::Quadrant
+                | SnapType::Intersection
+                | SnapType::Insertion
+                | SnapType::ApparentIntersection
+        );
+        let endpoints_only = !self.otrack_enabled;
+        if !eligible
+            || (endpoints_only && hit.snap_type != SnapType::Endpoint)
+            || (hit.world - point).length_squared() > 1e-12
+        {
+            return false;
+        }
+
+        // Identical to the normal acquisition toggle, but a confirmed idle
+        // point does not require 3 separate pointer-motion samples.
+        if let Some(existing) = self.tracking_points.iter().position(|p| {
+            (*p - point).length() < self.grid_spacing as f64 * 0.1
+        }) {
+            self.tracking_points.remove(existing);
+            if existing < self.tracking_dirs.len() {
+                self.tracking_dirs.remove(existing);
+            }
+            if existing < self.tracking_perp_dirs.len() {
+                self.tracking_perp_dirs.remove(existing);
+            }
+        } else {
+            self.acquire_tracking_point(point, wires, endpoints_only);
+        }
+        self.dwell_acquired = true;
+        self.dwell_observations = self.dwell_observations.max(3);
+        true
+    }
+
     /// Immediately acquire the explicitly engaged grip as a tracking point.
     ///
     /// A grip was deliberately selected by the user, so unlike ordinary cursor
@@ -4266,6 +4342,51 @@ mod ext_tests {
         s.enabled.remove(&SnapType::Extension);
         s.otrack_enabled = true;
         assert!(s.tracking_active());
+    }
+
+    #[test]
+    fn extension_acquires_stationary_endpoint_without_three_pointer_moves() {
+        let mut snapper = Snapper::default();
+        snapper.enabled.insert(SnapType::Extension);
+        snapper.snap_enabled = true;
+        snapper.otrack_enabled = false;
+        let endpoint = DVec3::new(10.0, 0.0, 0.0);
+        snapper.last_snap_world = Some(endpoint);
+        snapper.dwell_since = Some(Instant::now() - std::time::Duration::from_millis(300));
+        snapper.dwell_observations = 1; // one settled scan on a dense document
+        let wires = [WireModel {
+            points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            ..Default::default()
+        }];
+        let snap = SnapResult {
+            world: endpoint,
+            screen: Point::new(200.0, 200.0),
+            snap_type: SnapType::Endpoint,
+            tangent_obj: None,
+            extension_base: None,
+            extension_base2: None,
+            extension_origin: None,
+            extension_dir: None,
+            viewport: None,
+            source: None,
+            secondary_source: None,
+            model_point: None,
+        };
+        assert!(snapper.stationary_tracking_due(Instant::now()));
+        assert!(snapper.acquire_stationary_tracking(Some(snap), &wires, Instant::now()));
+        assert_eq!(snapper.tracking_points, vec![endpoint]);
+        assert!(!snapper.tracking_dirs[0].is_empty(), "Extension requires the outward edge direction");
+        assert!(!snapper.stationary_tracking_pending(), "do not run repeated expensive queries");
+        assert!(!snapper.acquire_stationary_tracking(Some(snap), &wires, Instant::now()));
+    }
+
+    #[test]
+    fn extension_does_not_acquire_before_stationary_dwell() {
+        let mut snapper = Snapper::default();
+        snapper.enabled.insert(SnapType::Extension);
+        snapper.last_snap_world = Some(DVec3::new(10.0, 0.0, 0.0));
+        snapper.dwell_since = Some(Instant::now());
+        assert!(!snapper.stationary_tracking_due(Instant::now()));
     }
 
     #[test]
