@@ -2924,9 +2924,12 @@ impl OpenCADStudio {
                 let candidate_ms = crate::perf::elapsed_ms(candidate_started);
                 if perf_move && (hit_test_ms >= 1.0 || candidate_ms >= 1.0) {
                     crate::perf_record!(
-                        "[perf] snap-candidates hit-test={hit_test_ms:.2}ms query={candidate_ms:.2}ms wires={} candidates={}",
+                        "[perf] snap-candidates hit-test={hit_test_ms:.2}ms query={candidate_ms:.2}ms wires={} candidates={} f3={} f4={} entity_pick={}",
                         all_wire_count,
                         candidates.len(),
+                        self.snapper.is_active(),
+                        self.snapper.snap3d_enabled && !self.snapper.enabled3d.is_empty(),
+                        picks_entities_or_tangent,
                     );
                 }
                 candidates
