@@ -148,7 +148,7 @@ impl OpenCADStudio {
     pub(super) fn handle_stretch_window(
         &mut self,
         mut handles: Vec<Handle>,
-        windows: Vec<(glam::DVec3, glam::DVec3)>,
+        windows: Vec<crate::modules::draw::modify::stretch::StretchWindow>,
     ) {
         let i = self.active_tab;
         // Accumulate every entity touched by any crossing window. Keep STRETCH
@@ -156,11 +156,11 @@ impl OpenCADStudio {
         {
             let scene = &self.tabs[i].scene;
 
-            for (win_min, win_max) in &windows {
+            for region in windows.iter().filter(|region| !region.subtract) {
                 handles.extend(
                     scene
                         .interaction_handles_in_world_aabb([
-                            win_min.x, win_min.y, win_max.x, win_max.y,
+                            region.min.x, region.min.y, region.max.x, region.max.y,
                         ])
                         .into_iter()
                         .filter(|&handle| !scene.is_layer_locked(handle)),
@@ -175,21 +175,12 @@ impl OpenCADStudio {
             self.command_line
                 .push_output(crate::t!("STRETCH: nothing crosses the window.").as_ref());
         } else {
-            // Visual feedback must only highlight entities that actually have a
-            // stretchable point inside one of the crossing windows. `handles` can
-            // contain the whole candidate/preselection set, while `windows` decides
-            // which vertices will really move.
+            // Visual grips must match the *effective* vertex selection:
+            // latest window wins, including Shift removal and later re-add.
             let point_inside = |point: glam::DVec3| {
-                const EPS: f64 = 1.0e-9;
-
-                windows.iter().any(|(win_min, win_max)| {
-                    point.x >= win_min.x - EPS
-                        && point.x <= win_max.x + EPS
-                        && point.y >= win_min.y - EPS
-                        && point.y <= win_max.y + EPS
-                        && point.z >= win_min.z - EPS
-                        && point.z <= win_max.z + EPS
-                })
+                crate::modules::draw::modify::stretch::vertex_selected(
+                    &windows, point.x, point.y,
+                )
             };
 
             let mut visual_handles = Vec::new();
@@ -265,7 +256,7 @@ impl OpenCADStudio {
     pub(super) fn handle_stretch_entities(
         &mut self,
         mut handles: Vec<Handle>,
-        windows: Vec<(glam::DVec3, glam::DVec3)>,
+        windows: Vec<crate::modules::draw::modify::stretch::StretchWindow>,
         delta: glam::DVec3,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
@@ -285,12 +276,10 @@ impl OpenCADStudio {
         let mut changed_handles = Vec::new();
         let mut driven_refs = Vec::new();
 
-        // Helper: is DXF point (x, y) inside the world-space window?
-        // Drawing plane is world XY (= DXF XY).
+        // Keep constraint-driving point choices consistent with both the
+        // live preview and Shift-subtracted vertex windows.
         let in_win = |x: f64, y: f64| -> bool {
-            windows.iter().any(|(win_min, win_max)| {
-                x >= win_min.x && x <= win_max.x && y >= win_min.y && y <= win_max.y
-            })
+            crate::modules::draw::modify::stretch::vertex_selected(&windows, x, y)
         };
 
         // Dimensions whose points moved — their baked *D block is
