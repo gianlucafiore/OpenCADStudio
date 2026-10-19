@@ -3844,7 +3844,7 @@ impl OpenCADStudio {
                 // skipped the snap. It is NOT the authoritative result:
                 // schedule one full query when the pointer settles, even
                 // if this was the only mouse-move event.
-                snap_resolved: settled_full_snap || !needs_candidates,
+                snap_resolved: settled_full_snap || !needs_candidates || !wants_point,
             });
         } else if !self.client_pick_pending(i) {
             // Idle (no command, no pending client pick): the snap marker is
