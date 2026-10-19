@@ -2217,21 +2217,16 @@ pub enum CmdResult {
         angle: f32,
         operation: HatchEditOperation,
     },
-    /// STRETCH crossing-window selection. The command can accumulate several
-    /// independent crossing windows before Enter ends the selection stage.
+    /// STRETCH selection. Ordered crossing windows add vertices, while
+    /// Shift+crossing windows remove them from the moving set.
     StretchWindow {
-        /// Handles already gathered by previous crossing windows / preselection.
         handles: Vec<Handle>,
-        /// Every crossing window gathered so far.
-        windows: Vec<(DVec3, DVec3)>,
+        windows: Vec<crate::modules::draw::modify::stretch::StretchWindow>,
     },
-    /// Stretch entities: move only vertices/endpoints inside any gathered
-    /// crossing window.
+    /// Move the vertices/endpoints selected by the ordered crossing windows.
     StretchEntities {
         handles: Vec<Handle>,
-        /// Independent crossing windows that define the points to move.
-        windows: Vec<(DVec3, DVec3)>,
-        /// Translation vector applied once to every selected point.
+        windows: Vec<crate::modules::draw::modify::stretch::StretchWindow>,
         delta: DVec3,
     },
     /// Extrude one or more profiles with the requested construction mode.
