@@ -11278,9 +11278,11 @@ impl Scene {
         )
     }
 
-    /// Fast cursor preview query. If the resident index is still being built,
-    /// return an empty indexed result instead of scanning the entire drawing;
-    /// the settled/click snap path continues to use the complete fallback.
+    /// Fast cursor preview query. Dense apertures defer expensive feature
+    /// scans, but progressively narrowing the live preview's catch radius can
+    /// reveal close endpoints/nodes without processing 20k nearby segments.
+    /// The stationary hover and click continue to use the original FULL
+    /// aperture and are never narrowed.
     pub fn interaction_snap_preview_candidates_near(
         &self,
         wires: Arc<Vec<WireModel>>,
@@ -11290,17 +11292,34 @@ impl Scene {
         bounds: iced::Rectangle,
         radius_px: f32,
     ) -> crate::scene::pick::interaction_index::InteractionCandidates {
-        self.interaction_candidates_near_impl(
-            wires,
-            cursor,
-            view_rot,
-            eye,
-            bounds,
-            radius_px,
-            false,
-            true,
-            Some(SnapQueryCategory::DiscretePreview),
-        )
+        let mut aperture = radius_px;
+        for _ in 0..4 {
+            let candidates = self.interaction_candidates_near_impl(
+                Arc::clone(&wires),
+                cursor,
+                view_rot,
+                eye,
+                bounds,
+                aperture,
+                false,
+                true,
+                Some(SnapQueryCategory::DiscretePreview),
+            );
+            // A completed index query carries its aperture (even when
+            // nothing matched). Only a density-deferred/pending result has
+            // neither a query box nor candidates; retry with a smaller one.
+            if candidates.query_aabb().is_some()
+                || candidates.screen_query().is_some()
+                || candidates.len() != 0
+            {
+                return candidates;
+            }
+            aperture *= 0.5;
+        }
+        // Even a tiny aperture is too dense (or the index is still pending):
+        // leave the UI responsive; the full stationary snap will display the
+        // exact glyph once the pointer stops.
+        InteractionCandidates::pending(wires)
     }
 
     pub fn interaction_pick_candidates_near(
