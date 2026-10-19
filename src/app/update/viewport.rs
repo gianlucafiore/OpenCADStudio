@@ -3795,7 +3795,11 @@ impl OpenCADStudio {
                 point: p_full,
                 tab: i,
                 preview_dirty: false,
-                snap_resolved: true,
+                // A density-bounded motion query may have intentionally
+                // skipped the snap. It is NOT the authoritative result:
+                // schedule one full query when the pointer settles, even
+                // if this was the only mouse-move event.
+                snap_resolved: settled_full_snap || !needs_candidates,
             });
         } else if !self.client_pick_pending(i) {
             // Idle (no command, no pending client pick): the snap marker is
@@ -8223,6 +8227,28 @@ mod rapid_drawing_tests {
                 assert_eq!(entities.len(), if command == "LINE" { 3 } else { 1 });
             }
         }
+    }
+
+    #[test]
+    fn dense_motion_snap_must_resolve_after_the_first_move_settles() {
+        let mut app = drawing_app("LINE");
+        app.snapper.snap_enabled = true;
+        let target = glam::DVec3::new(40.0, 30.0, 0.0);
+        let at = screen(&app, target);
+
+        let _ = app.update(Message::ViewportMove(at));
+        let first = app.snap_dwell.as_ref().expect("point pick arms snap dwell");
+        assert!(
+            !first.snap_resolved,
+            "a moving-cursor budget is not an authoritative snap; retry after dwell"
+        );
+        app.snap_dwell.as_mut().unwrap().last_move_at =
+            Instant::now() - std::time::Duration::from_millis(100);
+        let _ = app.on_snap_dwell_tick();
+        assert!(
+            app.snap_dwell.as_ref().is_some_and(|d| d.snap_resolved),
+            "the settled snap must resolve fully and not stay in the preview-only state"
+        );
     }
 
     #[test]
