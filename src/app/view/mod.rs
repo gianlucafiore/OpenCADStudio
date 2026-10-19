@@ -3021,7 +3021,15 @@ impl OpenCADStudio {
         let snap_dwell = if self
             .snap_dwell
             .as_ref()
-            .is_some_and(|dwell| !dwell.snap_resolved || dwell.preview_dirty)
+            .is_some_and(|dwell| {
+                !dwell.snap_resolved
+                    || dwell.preview_dirty
+                    // Keep only the acquisition timer alive after the first
+                    // exact hover snap. A stationary endpoint needs 250 ms
+                    // to acquire its Extension/OTRACK direction even if no
+                    // further mouse-move events arrive on a dense drawing.
+                    || self.snapper.stationary_tracking_pending()
+            })
         {
             window::frames().map(|_| Message::SnapDwellTick)
         } else {
