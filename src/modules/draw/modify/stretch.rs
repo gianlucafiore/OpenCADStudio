@@ -652,3 +652,105 @@ impl CadCommand for StretchCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod shift_stretch_tests {
+    use super::*;
+    use codec::entities::Line;
+    use codec::types::Vector3;
+    use codec::EntityType;
+
+    fn region(x0: f64, y0: f64, x1: f64, y1: f64, subtract: bool) -> StretchWindow {
+        StretchWindow {
+            min: DVec3::new(x0, y0, -1.0),
+            max: DVec3::new(x1, y1, 1.0),
+            subtract,
+        }
+    }
+
+    fn line() -> EntityType {
+        let mut line = Line::new();
+        line.start = Vector3::new(0.0, 0.0, 0.0);
+        line.end = Vector3::new(10.0, 0.0, 0.0);
+        EntityType::Line(line)
+    }
+
+    #[test]
+    fn shift_window_removes_only_the_covered_vertex() {
+        let windows = [
+            region(-1.0, -1.0, 11.0, 1.0, false),
+            region(-1.0, -1.0, 1.0, 1.0, true),
+        ];
+        assert!(!vertex_selected(&windows, 0.0, 0.0));
+        assert!(vertex_selected(&windows, 10.0, 0.0));
+        let mut entity = line();
+        assert!(stretch_entity(
+            &mut entity,
+            &windows,
+            DVec3::new(0.0, 5.0, 0.0),
+        ));
+        let EntityType::Line(line) = entity else {
+            panic!("line expected");
+        };
+        assert_eq!(line.start.y, 0.0);
+        assert_eq!(line.end.y, 5.0);
+    }
+
+    #[test]
+    fn later_additive_window_reselects_a_shift_removed_vertex() {
+        let windows = [
+            region(-1.0, -1.0, 11.0, 1.0, false),
+            region(-1.0, -1.0, 1.0, 1.0, true),
+            region(-1.0, -1.0, 1.0, 1.0, false),
+        ];
+        let mut entity = line();
+        assert!(vertex_selected(&windows, 0.0, 0.0));
+        assert!(stretch_entity(
+            &mut entity,
+            &windows,
+            DVec3::new(0.0, 5.0, 0.0),
+        ));
+        let EntityType::Line(line) = entity else {
+            panic!("line expected");
+        };
+        assert_eq!(line.start.y, 5.0);
+        assert_eq!(line.end.y, 5.0);
+    }
+
+    #[test]
+    fn shifted_opposite_corner_records_a_subtractive_selection() {
+        let mut cmd = StretchCommand::new(Vec::new(), Vec::new());
+        assert!(matches!(cmd.on_point(DVec3::new(-1.0, -1.0, 0.0)), CmdResult::NeedPoint));
+        cmd.set_shift(true);
+        let result = cmd.on_point(DVec3::new(1.0, 1.0, 0.0));
+        let CmdResult::StretchWindow { windows, .. } = result else {
+            panic!("STRETCH must request another selection window");
+        };
+        assert_eq!(windows.len(), 1);
+        assert!(windows[0].subtract);
+    }
+
+    #[test]
+    fn stretch_preview_replaces_hidden_original_with_modified_geometry() {
+        let mut document = codec::CadDocument::new();
+        let handle = document.add_entity(line()).expect("add line");
+        let windows = vec![
+            region(-1.0, -1.0, 11.0, 1.0, false),
+            region(-1.0, -1.0, 1.0, 1.0, true),
+        ];
+        let mut cmd = StretchCommand::with_windows(vec![handle], Vec::new(), windows);
+        cmd.step = Step::Target { base: DVec3::ZERO };
+        assert_eq!(cmd.preview_hidden_handles(), &[handle]);
+        let preview = cmd.preview_entities(&document, DVec3::new(0.0, 5.0, 0.0));
+        assert_eq!(preview.len(), 1);
+        let EntityType::Line(ref stretched) = preview[0] else {
+            panic!("expected line preview");
+        };
+        assert_eq!(stretched.start.y, 0.0);
+        assert_eq!(stretched.end.y, 5.0);
+        let EntityType::Line(original) = document.get_entity(handle).expect("original") else {
+            panic!("expected original line");
+        };
+        assert_eq!(original.end.y, 0.0, "preview must not edit the document");
+    }
+}
