@@ -178,15 +178,10 @@ pub fn stretch_entity(
             }
         }
         codec::EntityType::Viewport(vp) => {
-            // The viewport implementation may inspect its rectangle, so test
-            // the actual centre with the same ordered selection semantics.
-            if in_win(vp.center.x, vp.center.y) {
-                stretched = windows.iter().any(|window| {
-                    !window.subtract && crate::entities::viewport::stretch(
-                        vp, window.min, window.max, delta,
-                    )
-                });
-            }
+            // Viewport STRETCH edits its corners. Evaluate the final
+            // additive/subtractive region set once per original corner;
+            // checking the centre would miss partial corner selections.
+            stretched = crate::entities::viewport::stretch_where(vp, &in_win, delta);
         }
         codec::EntityType::Dimension(dim) => {
             use codec::entities::Dimension;
