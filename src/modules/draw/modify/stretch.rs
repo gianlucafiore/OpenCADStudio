@@ -27,6 +27,34 @@ use crate::scene::model::wire_model::WireModel;
 
 // ── Stretching one entity ──────────────────────────────────────────────────
 
+/// An ordered vertex-selection region. Shift means remove from the current
+/// vertex set; a later ordinary crossing window can add the same point back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StretchWindow {
+    pub min: DVec3,
+    pub max: DVec3,
+    pub subtract: bool,
+}
+
+impl StretchWindow {
+    pub fn add(min: DVec3, max: DVec3) -> Self {
+        Self { min, max, subtract: false }
+    }
+
+    pub fn contains_xy(&self, x: f64, y: f64) -> bool {
+        x >= self.min.x && x <= self.max.x && y >= self.min.y && y <= self.max.y
+    }
+}
+
+/// Evaluate the windows in pick order, like the selection marquee: the
+/// latest window covering a vertex decides whether it moves.
+pub fn vertex_selected(windows: &[StretchWindow], x: f64, y: f64) -> bool {
+    windows.iter().rev()
+        .find(|window| window.contains_xy(x, y))
+        .is_some_and(|window| !window.subtract)
+}
+
+
 /// Stretch `entity` by `delta`: the points of it that lie in one of the
 /// crossing `windows` (world XY) move, the rest stay. Arcs and polyline arc
 /// segments keep their height (sagitta) as the chord under them changes.
@@ -34,14 +62,10 @@ use crate::scene::model::wire_model::WireModel;
 /// both go through here.
 pub fn stretch_entity(
     entity: &mut codec::EntityType,
-    windows: &[(DVec3, DVec3)],
+    windows: &[StretchWindow],
     delta: DVec3,
 ) -> bool {
-    let in_win = |x: f64, y: f64| -> bool {
-        windows.iter().any(|(win_min, win_max)| {
-            x >= win_min.x && x <= win_max.x && y >= win_min.y && y <= win_max.y
-        })
-    };
+    let in_win = |x: f64, y: f64| -> bool { vertex_selected(windows, x, y) };
     let (dx, dy, dz) = (delta.x, delta.y, delta.z);
     let mut stretched = false;
     match entity {
@@ -154,9 +178,15 @@ pub fn stretch_entity(
             }
         }
         codec::EntityType::Viewport(vp) => {
-            stretched = windows.iter().any(|(win_min, win_max)| {
-                crate::entities::viewport::stretch(vp, *win_min, *win_max, delta)
-            });
+            // The viewport implementation may inspect its rectangle, so test
+            // the actual centre with the same ordered selection semantics.
+            if in_win(vp.center.x, vp.center.y) {
+                stretched = windows.iter().any(|window| {
+                    !window.subtract && crate::entities::viewport::stretch(
+                        vp, window.min, window.max, delta,
+                    )
+                });
+            }
         }
         codec::EntityType::Dimension(dim) => {
             use codec::entities::Dimension;
@@ -378,8 +408,9 @@ pub struct StretchCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
     /// Independent crossing windows accumulated during the selection stage.
-    windows: Vec<(DVec3, DVec3)>,
+    windows: Vec<StretchWindow>,
     step: Step,
+    shift: bool,
 }
 
 impl StretchCommand {
@@ -389,6 +420,7 @@ impl StretchCommand {
             wire_models,
             windows: Vec::new(),
             step: Step::WindowCorner1,
+            shift: false,
         }
     }
 
@@ -402,8 +434,9 @@ impl StretchCommand {
         Self {
             handles,
             wire_models,
-            windows: vec![window],
+            windows: vec![StretchWindow::add(window.0, window.1)],
             step: Step::Base,
+            shift: false,
         }
     }
 
@@ -412,13 +445,14 @@ impl StretchCommand {
     pub fn with_windows(
         handles: Vec<Handle>,
         wire_models: Vec<WireModel>,
-        windows: Vec<(DVec3, DVec3)>,
+        windows: Vec<StretchWindow>,
     ) -> Self {
         Self {
             handles,
             wire_models,
             windows,
             step: Step::WindowCorner1,
+            shift: false,
         }
     }
     /// A window enclosing every vertex of the current selection, or `None`
@@ -463,6 +497,10 @@ impl CadCommand for StretchCommand {
         "STRETCH"
     }
 
+    fn set_shift(&mut self, shift: bool) {
+        self.shift = shift;
+    }
+
     fn prompt(&self) -> String {
         match &self.step {
             Step::WindowCorner1 => {
@@ -502,7 +540,7 @@ impl CadCommand for StretchCommand {
                 let win_max = c1.max(pt);
 
                 let mut windows = self.windows.clone();
-                windows.push((win_min, win_max));
+                windows.push(StretchWindow { min: win_min, max: win_max, subtract: self.shift });
 
                 // Hand the accumulated selection back to the host. The host resolves
                 // the entities touched by this window and relaunches STRETCH still in
