@@ -24,6 +24,55 @@ use iced::time::Instant;
 use iced::{mouse, Point, Task};
 use std::sync::Arc;
 
+/// Point commands with no geometry-dependent snap or entity pick do not
+/// need any resident wires under the pointer. In particular, Ortho/Polar and
+/// grid snapping use the cursor/axes, not the document's interaction index.
+/// Avoid a large spatial query on EVERY move over dense block linework.
+fn command_needs_scene_candidates(
+    snapper: &crate::snap::Snapper,
+    picks_entities_or_tangent: bool,
+) -> bool {
+    picks_entities_or_tangent
+        || snapper.is_active()
+        || (snapper.snap3d_enabled && !snapper.enabled3d.is_empty())
+        || snapper.alignment_active()
+}
+
+#[cfg(test)]
+mod command_candidate_gate_tests {
+    use super::*;
+
+    #[test]
+    fn no_scene_query_for_plain_line_even_with_polar_or_ortho() {
+        let mut snapper = crate::snap::Snapper::default();
+        snapper.snap_enabled = false;
+        snapper.snap3d_enabled = false;
+        snapper.otrack_enabled = false;
+        // Ortho and Polar deliberately aren't inputs to this decision.
+        assert!(!command_needs_scene_candidates(&snapper, false));
+        // Grid snap is mathematical, not a resident-entity pick.
+        snapper.grid_snap_on = true;
+        assert!(!command_needs_scene_candidates(&snapper, false));
+    }
+
+    #[test]
+    fn scene_query_preserved_when_geometry_is_needed() {
+        let mut snapper = crate::snap::Snapper::default();
+        snapper.snap_enabled = false;
+        snapper.snap3d_enabled = false;
+        snapper.otrack_enabled = false;
+        assert!(command_needs_scene_candidates(&snapper, true)); // entity/selection/tangent
+        snapper.snap_enabled = true;
+        assert!(command_needs_scene_candidates(&snapper, false)); // F3
+        snapper.snap_enabled = false;
+        snapper.snap3d_enabled = true;
+        assert!(command_needs_scene_candidates(&snapper, false)); // F4
+        snapper.snap3d_enabled = false;
+        snapper.otrack_enabled = true;
+        assert!(command_needs_scene_candidates(&snapper, false)); // F11
+    }
+}
+
 /// Pixel radius for grabbing a UCS-icon grip (origin dot or an axis tip).
 const UCS_GRIP_HIT_PX: f32 = 9.0;
 /// Pixel reach for hovering/clicking the icon body (origin, tips, or an arm).
@@ -2842,34 +2891,52 @@ impl OpenCADStudio {
             // Cursor and wires are model-space; the snap result is model.
             let snap_cursor = cursor_world;
 
-            let hit_test_started = perf_move.then(Instant::now);
-            let all_wires =
-                if let (Some(_), Some(h)) = (&edit_cam, self.tabs[i].scene.active_viewport) {
-                    self.tabs[i]
-                        .scene
-                        .model_wires_for_viewport_arc(h, bounds.height)
-                } else {
-                    self.tabs[i].scene.hit_test_wires()
-                };
-            let hit_test_ms = crate::perf::elapsed_ms(hit_test_started);
-            let all_wire_count = all_wires.len();
-            let candidate_started = perf_move.then(Instant::now);
-            let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
-                all_wires,
-                snap_cursor,
-                view_rot,
-                eye,
-                bounds,
-                self.snapper.osnap_radius_px,
-            );
-            let candidate_ms = crate::perf::elapsed_ms(candidate_started);
-            if perf_move && (hit_test_ms >= 1.0 || candidate_ms >= 1.0) {
-                crate::perf_record!(
-                    "[perf] snap-candidates hit-test={hit_test_ms:.2}ms query={candidate_ms:.2}ms wires={} candidates={}",
-                    all_wire_count,
-                    snap_candidates.len(),
+            // Even with OSNAP switched off, the old path materialized up
+            // to tens of thousands of nearby block wires per cursor event.
+            // Entity pick/selection still needs those candidates, as do live
+            // 2D/3D object snaps and tracking. Polar/Ortho/grid do not.
+            let picks_entities_or_tangent = self.tabs[i].active_cmd.as_ref().is_some_and(|cmd| {
+                cmd.needs_entity_pick() || cmd.is_selection_gathering() || cmd.needs_tangent_pick()
+            });
+            let needs_candidates =
+                command_needs_scene_candidates(&self.snapper, picks_entities_or_tangent);
+            let snap_candidates = if needs_candidates {
+                let hit_test_started = perf_move.then(Instant::now);
+                let all_wires =
+                    if let (Some(_), Some(h)) = (&edit_cam, self.tabs[i].scene.active_viewport) {
+                        self.tabs[i]
+                            .scene
+                            .model_wires_for_viewport_arc(h, bounds.height)
+                    } else {
+                        self.tabs[i].scene.hit_test_wires()
+                    };
+                let hit_test_ms = crate::perf::elapsed_ms(hit_test_started);
+                let all_wire_count = all_wires.len();
+                let candidate_started = perf_move.then(Instant::now);
+                let candidates = self.tabs[i].scene.interaction_candidates_near(
+                    all_wires,
+                    snap_cursor,
+                    view_rot,
+                    eye,
+                    bounds,
+                    self.snapper.osnap_radius_px,
                 );
-            }
+                let candidate_ms = crate::perf::elapsed_ms(candidate_started);
+                if perf_move && (hit_test_ms >= 1.0 || candidate_ms >= 1.0) {
+                    crate::perf_record!(
+                        "[perf] snap-candidates hit-test={hit_test_ms:.2}ms query={candidate_ms:.2}ms wires={} candidates={}",
+                        all_wire_count,
+                        candidates.len(),
+                    );
+                }
+                candidates
+            } else {
+                // Preserve the regular point/constraint/preview path; it just
+                // receives no resident geometry to scan when none is relevant.
+                crate::scene::pick::interaction_index::InteractionCandidates::all(
+                    Arc::new(Vec::new()),
+                )
+            };
             let needs_entity = self.tabs[i]
                 .active_cmd
                 .as_ref()
