@@ -695,6 +695,12 @@ impl Snapper {
                     if !self.dwell_acquired
                         && self.dwell_observations >= MIN_OBSERVATIONS
                         && elapsed >= DWELL_MS
+                        // Density-budgeted cursor queries deliberately have
+                        // no wires. Capturing from them would store a tracking
+                        // point without its incident edge directions, making
+                        // Extension silently disappear on large documents.
+                        // Wait for the scheduled full idle/click query.
+                        && wires.len() > 0
                     {
                         self.dwell_acquired = true;
                         // Dwelling over an already-acquired point removes it;
@@ -878,8 +884,11 @@ impl Snapper {
         wires: &W,
         endpoints_only: bool,
     ) {
-        if self.dwell_acquired || self.dwell_observations < min_observations {
-            return; // already handled by the in-place branch
+        if self.dwell_acquired
+            || self.dwell_observations < min_observations
+            || wires.len() == 0
+        {
+            return; // already acquired or source geometry was deferred
         }
         let Some(prev) = self.last_snap_world else {
             return;
@@ -4342,6 +4351,53 @@ mod ext_tests {
         s.enabled.remove(&SnapType::Extension);
         s.otrack_enabled = true;
         assert!(s.tracking_active());
+    }
+
+    #[test]
+    fn empty_budgeted_preview_never_acquires_extension_without_edge_directions() {
+        let mut snapper = Snapper::default();
+        snapper.enabled.insert(SnapType::Extension);
+        snapper.otrack_enabled = true;
+        let p = DVec3::new(10.0, 0.0, 0.0);
+        let hit = SnapResult {
+            world: p,
+            screen: Point::new(100.0, 100.0),
+            snap_type: SnapType::Endpoint,
+            tangent_obj: None,
+            extension_base: None,
+            extension_base2: None,
+            extension_origin: None,
+            extension_dir: None,
+            viewport: None,
+            source: None,
+            secondary_source: None,
+            model_point: None,
+        };
+        snapper.last_snap_world = Some(p);
+        snapper.dwell_since = Some(Instant::now() - std::time::Duration::from_millis(300));
+        snapper.dwell_observations = 4;
+        let view = Mat4::IDENTITY;
+        let bounds = Rectangle {
+            x: 0.0, y: 0.0, width: 200.0, height: 200.0,
+        };
+        let no_wires: [WireModel; 0] = [];
+        snapper.update_otrack_dwell(
+            Some(hit),
+            &no_wires,
+            view,
+            DVec3::ZERO,
+            bounds,
+            Instant::now(),
+        );
+        assert!(snapper.tracking_points.is_empty());
+        assert!(snapper.stationary_tracking_pending());
+        let wires = [WireModel {
+            points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            ..Default::default()
+        }];
+        assert!(snapper.acquire_stationary_tracking(Some(hit), &wires, Instant::now()));
+        assert_eq!(snapper.tracking_points, vec![p]);
+        assert!(!snapper.tracking_dirs[0].is_empty());
     }
 
     #[test]
