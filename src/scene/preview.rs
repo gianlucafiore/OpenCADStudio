@@ -498,13 +498,17 @@ impl Scene {
         Some((wires, hatches))
     }
 
-    /// Build wire models for an arbitrary slice of entities (e.g. clipboard contents).
+    /// Build wire models for an arbitrary slice of entities (e.g. live command previews).
     /// Entities need not be in the document — they are tessellated directly.
+    /// One-off overlays use the regular wire GPU path, not the resident block
+    /// instance GPU path. Flatten instance/stub tags while retaining the already
+    /// transformed world-space geometry, or a stretched INSERT disappears.
     pub fn wires_for_entities(&self, entities: &[codec::EntityType]) -> Vec<WireModel> {
-        entities
+        let wires = entities
             .iter()
             .flat_map(|e| self.tessellate_one(e))
-            .collect()
+            .collect();
+        flatten_one_off_instances(wires)
     }
 
     pub fn set_interim_wire(&mut self, w: WireModel) {
@@ -538,6 +542,21 @@ impl Scene {
     }
 }
 
+/// Block wires already contain world-space vertices, but carry an instance
+/// marker for the resident block GPU path. The interim/command-preview pipeline
+/// ignores that path. Expand repeated-block stubs and clear the marker so these
+/// transient wires are uploaded and drawn like any other preview geometry.
+fn flatten_one_off_instances(wires: Vec<WireModel>) -> Vec<WireModel> {
+    if !wires.iter().any(|wire| wire.render_instance.is_some() || wire.stub.is_some()) {
+        return wires;
+    }
+    let mut flattened = crate::scene::model::instance_model::expand_stubs(&wires).into_owned();
+    for wire in &mut flattened {
+        wire.render_instance = None;
+    }
+    flattened
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +578,53 @@ mod tests {
         .unwrap();
         let wires = s.block_preview_wires("Widget");
         assert!(!wires.is_empty(), "a LINE block must tessellate to wires");
+    }
+
+    #[test]
+    fn one_off_insert_previews_keep_block_geometry_visible() {
+        let mut scene = Scene::new();
+        let mut line = Line::new();
+        line.start = Vector3::new(0.0, 0.0, 0.0);
+        line.end = Vector3::new(10.0, 0.0, 0.0);
+        scene.define_block_from_owned_entities(
+            vec![EntityType::Line(line)],
+            "PreviewInsert",
+            glam::DVec3::ZERO,
+        ).unwrap();
+
+        let insert = codec::entities::Insert::new(
+            "PreviewInsert",
+            Vector3::new(30.0, 15.0, 0.0),
+        );
+        let preview = scene.wires_for_entities(&[EntityType::Insert(insert)]);
+        assert!(
+            preview.iter().any(|wire| wire.points.len() >= 2),
+            "live preview should contain the INSERT's expanded geometry"
+        );
+        assert!(
+            preview.iter().all(|wire| wire.render_instance.is_none() && wire.stub.is_none()),
+            "the command overlay has no block-instance GPU pass"
+        );
+    }
+
+    #[test]
+    fn one_off_instance_materialization_preserves_transformed_points() {
+        use crate::scene::model::instance_model::RenderInstance;
+
+        let mut wire = WireModel::solid(
+            "123".into(),
+            vec![[30.0, 15.0, 0.0], [40.0, 15.0, 0.0]],
+            WireModel::CYAN,
+            false,
+        );
+        wire.render_instance = Some(RenderInstance {
+            source_id: 1,
+            translation: [30.0, 15.0, 0.0],
+        });
+        let preview = flatten_one_off_instances(vec![wire]);
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview[0].points, vec![[30.0, 15.0, 0.0], [40.0, 15.0, 0.0]]);
+        assert!(preview[0].render_instance.is_none());
     }
 
     #[test]
