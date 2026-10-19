@@ -3089,6 +3089,51 @@ impl OpenCADStudio {
                 );
             }
 
+            // OTRACK/Ortho/Polar can keep a point command on the full-motion
+            // route, rather than the throttled discrete-preview route above.
+            // In a dense viewport that full-motion query is intentionally
+            // budgeted to an empty result. Still try a narrow discrete snap
+            // aperture for its yellow glyph, without paying for thousands
+            // of continuous segments on every move. The settled/click paths
+            // still run the complete, unmodified full-aperture query.
+            let deferred_dense_motion = snap_candidates.len() == 0
+                && snap_candidates.query_aabb().is_none()
+                && snap_candidates.screen_query().is_none();
+            if deferred_dense_motion
+                && !settled_full_snap
+                && wants_point
+                && !is_window_corner
+                && self.tabs[i].snap_result.is_none()
+                && self.snapper.has_discrete_preview_enabled()
+            {
+                let all_wires =
+                    if let (Some(_), Some(handle)) = (&edit_cam, self.tabs[i].scene.active_viewport) {
+                        self.tabs[i]
+                            .scene
+                            .model_wires_for_viewport_arc(handle, bounds.height)
+                    } else {
+                        self.tabs[i].scene.hit_test_wires()
+                    };
+                let discrete_candidates =
+                    self.tabs[i].scene.interaction_snap_preview_candidates_near(
+                        all_wires,
+                        snap_cursor,
+                        view_rot,
+                        eye,
+                        bounds,
+                        self.snapper.osnap_radius_px,
+                    );
+                if let Some(snap) = self.snapper.snap_discrete_preview(
+                    p,
+                    &discrete_candidates,
+                    view_rot,
+                    eye,
+                    bounds,
+                ) {
+                    self.tabs[i].snap_result = Some(snap);
+                }
+            }
+
             // Paper-space snapping through layout viewports. `edit_cam`
             // is None here, so `cursor_world` is the paper point and the sheet
             // fills the canvas (pane-local == canvas pixels). The viewport hit
