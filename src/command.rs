@@ -3034,6 +3034,14 @@ pub trait CadCommand: Send {
         &[]
     }
 
+    /// A complex command preview can be much more expensive than drawing the
+    /// resident geometry. When true, keep the original entities visible and
+    /// draw only the command's lightweight preview wires until the point is
+    /// committed. The commit still applies the complete geometry operation.
+    fn preview_keep_resident(&self, _document: &codec::CadDocument) -> bool {
+        false
+    }
+
     /// What kind of input the current step expects from the command line.
     /// Default is [`InputKind::Point`].
     fn input_kind(&self) -> InputKind {
