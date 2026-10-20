@@ -797,7 +797,9 @@ mod shift_stretch_tests {
 
     #[test]
     fn large_or_block_stretch_keeps_originals_during_live_preview() {
-        let mut document = codec::CadDocument::new();
+        let mut scene = crate::scene::Scene::new();
+        scene.define_block_raw("LARGE_BLOCK", Vector3::ZERO, vec![line()]);
+        let mut document = scene.document;
         let a = document.add_entity(line()).expect("line");
         let mut dense = StretchCommand::with_windows(
             vec![a; 129],
