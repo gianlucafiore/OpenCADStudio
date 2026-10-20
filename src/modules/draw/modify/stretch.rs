@@ -641,6 +641,68 @@ impl CadCommand for StretchCommand {
         false
     }
 
+    fn preview_lightweight_wires(&self, pt: DVec3) -> Vec<WireModel> {
+        let Step::Target { base } = self.step else {
+            return Vec::new();
+        };
+        let delta = pt - base;
+        // At most 768 simplified vertices per motion event, regardless of
+        // how many entities or how finely tessellated a polyline is. Unlike
+        // preview_entities this never copies a document entity, tessellates a
+        // curve, or expands a nested block.
+        const MAX_VERTICES: usize = 768;
+        const MAX_WIRES: usize = 48;
+        let mut remaining = MAX_VERTICES;
+        let mut out = Vec::new();
+        for wire in &self.wire_models {
+            if remaining < 2 || out.len() >= MAX_WIRES {
+                break;
+            }
+            // Instances and nested stubs are not raw world-space polylines.
+            // A misleading per-vertex deformation would be worse than the
+            // displacement guide; their committed transform is unchanged.
+            if wire.render_instance.is_some() || wire.stub.is_some() || wire.points.len() < 2 {
+                continue;
+            }
+            let cap = remaining.min(128).max(2);
+            let count = wire.points.len();
+            let stride = ((count - 1) / (cap - 1)).max(1);
+            let mut points = Vec::with_capacity(cap);
+            for index in (0..count).step_by(stride) {
+                let mut point = wire_point(wire, index);
+                if vertex_selected(&self.windows, point.x, point.y) {
+                    point += delta;
+                }
+                points.push([point.x, point.y, point.z]);
+                if points.len() == cap {
+                    break;
+                }
+            }
+            if points.len() < cap && count > 1 {
+                let mut last = wire_point(wire, count - 1);
+                if vertex_selected(&self.windows, last.x, last.y) {
+                    last += delta;
+                }
+                let last = [last.x, last.y, last.z];
+                if points.last() != Some(&last) {
+                    points.push(last);
+                }
+            }
+            if points.len() >= 2 {
+                remaining -= points.len();
+                let mut ghost = WireModel::solid_f64(
+                    "__stretch_lightweight__".into(),
+                    points,
+                    [0.24, 0.76, 0.95, 0.8],
+                    false,
+                );
+                ghost.set_fixed_screen_width(1.2);
+                out.push(ghost);
+            }
+        }
+        out
+    }
+
     fn preview_entities(&mut self, document: &codec::CadDocument, pt: DVec3) -> Vec<codec::EntityType> {
         let Step::Target { base } = &self.step else {
             return Vec::new();
@@ -803,13 +865,22 @@ mod shift_stretch_tests {
         let a = document.add_entity(line()).expect("line");
         let mut dense = StretchCommand::with_windows(
             vec![a; 129],
-            vec![],
+            vec![WireModel::solid_f64(
+                "selected_line".into(),
+                vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                WireModel::CYAN,
+                false,
+            )],
             vec![region(-1.0, -1.0, 1.0, 1.0, false)],
         );
         dense.step = Step::Target { base: DVec3::ZERO };
         assert!(dense.preview_keep_resident(&document));
         assert!(dense.preview_entities(&document, DVec3::new(0.0, 5.0, 0.0)).is_empty());
         assert_eq!(dense.on_preview_wires(DVec3::new(0.0, 5.0, 0.0)).len(), 1);
+        let ghost = dense.preview_lightweight_wires(DVec3::new(0.0, 5.0, 0.0));
+        assert_eq!(ghost.len(), 1, "heavy preview should show a sampled deformed outline");
+        assert_eq!(wire_point(&ghost[0], 0), DVec3::new(0.0, 5.0, 0.0));
+        assert_eq!(wire_point(&ghost[0], 1), DVec3::new(10.0, 0.0, 0.0));
 
         let b = document.add_entity(EntityType::Insert(codec::entities::Insert::new(
             "LARGE_BLOCK", Vector3::ZERO,
