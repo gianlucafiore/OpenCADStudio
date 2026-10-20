@@ -1573,7 +1573,21 @@ fn constrain_parameter_position(
         }
         DynamicBlockData::RotationParameter(parameter) => {
             let delta = position - p.base;
-            let angle = constrain_value_set(delta.y.atan2(delta.x), &parameter.value_set);
+            let mut angle = delta.y.atan2(delta.x);
+            let set = &parameter.value_set;
+            // atan2 yields [-pi, pi], while the native rotation parameter
+            // created by BEDIT allows [0, 2*pi]. A clockwise quarter turn is
+            // -pi/2, equivalent to 3*pi/2 — do not clamp it to zero.
+            // Keep genuinely restricted angular ranges non-cyclic.
+            if set.flags & 3 == 3
+                && set.minimum.is_finite()
+                && set.maximum.is_finite()
+                && set.maximum - set.minimum >= std::f64::consts::TAU - 1e-10
+            {
+                angle = (angle - set.minimum).rem_euclid(std::f64::consts::TAU)
+                    + set.minimum;
+            }
+            let angle = constrain_value_set(angle, set);
             position = p.base + DVec3::new(angle.cos(), angle.sin(), 0.0) * delta.length();
         }
         _ => {}
