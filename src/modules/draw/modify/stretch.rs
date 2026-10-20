@@ -399,9 +399,59 @@ enum Step {
     Target { base: DVec3 },
 }
 
+/// An actual render segment adjacent to a vertex selected by the crossing
+/// window. Captured once when STRETCH enters its move stage. Reusing it on
+/// mouse moves avoids iterating over a 50k-vertex polyline every frame.
+#[derive(Clone, Copy)]
+struct StretchPreviewSpan {
+    a: DVec3,
+    b: DVec3,
+    a_moves: bool,
+    b_moves: bool,
+    wire: usize,
+    segment: usize,
+}
+
+fn changed_preview_spans(
+    wires: &[WireModel],
+    windows: &[StretchWindow],
+) -> Vec<StretchPreviewSpan> {
+    const MAX_SPANS: usize = 384;
+    if windows.is_empty() {
+        return vec![];
+    }
+    let mut spans = Vec::new();
+    for (wi, wire) in wires.iter().enumerate() {
+        // Instanced GPU blocks must not be exploded into tens of thousands
+        // of CPU wire copies just to show a rubber-band preview.
+        if wire.stub.is_some() || wire.render_instance.is_some() {
+            continue;
+        }
+        for j in 1..wire.points.len() {
+            let a = wire_point(wire, j - 1);
+            let b = wire_point(wire, j);
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
+            let a_moves = vertex_selected(windows, a.x, a.y);
+            let b_moves = vertex_selected(windows, b.x, b.y);
+            if a_moves || b_moves {
+                spans.push(StretchPreviewSpan {
+                    a, b, a_moves, b_moves, wire: wi, segment: j - 1,
+                });
+                if spans.len() >= MAX_SPANS {
+                    return spans;
+                }
+            }
+        }
+    }
+    spans
+}
+
 pub struct StretchCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    preview_spans: Vec<StretchPreviewSpan>,
     /// Independent crossing windows accumulated during the selection stage.
     windows: Vec<StretchWindow>,
     step: Step,
@@ -413,6 +463,7 @@ impl StretchCommand {
         Self {
             handles,
             wire_models,
+            preview_spans: Vec::new(),
             windows: Vec::new(),
             step: Step::WindowCorner1,
             shift: false,
@@ -426,10 +477,13 @@ impl StretchCommand {
         wire_models: Vec<WireModel>,
         window: (DVec3, DVec3),
     ) -> Self {
+        let windows = vec![StretchWindow::add(window.0, window.1)];
+        let preview_spans = changed_preview_spans(&wire_models, &windows);
         Self {
             handles,
             wire_models,
-            windows: vec![StretchWindow::add(window.0, window.1)],
+            preview_spans,
+            windows,
             step: Step::Base,
             shift: false,
         }
@@ -442,9 +496,11 @@ impl StretchCommand {
         wire_models: Vec<WireModel>,
         windows: Vec<StretchWindow>,
     ) -> Self {
+        let preview_spans = changed_preview_spans(&wire_models, &windows);
         Self {
             handles,
             wire_models,
+            preview_spans,
             windows,
             step: Step::WindowCorner1,
             shift: false,
@@ -571,6 +627,7 @@ impl CadCommand for StretchCommand {
             if self.windows.is_empty() {
                 if let Some((win_min, win_max)) = self.selection_bounds() {
                     self.windows.push(StretchWindow::add(win_min, win_max));
+                    self.preview_spans = changed_preview_spans(&self.wire_models, &self.windows);
                 }
             }
 
@@ -646,50 +703,42 @@ impl CadCommand for StretchCommand {
             return Vec::new();
         };
         let delta = pt - *base;
-        // At most 768 simplified vertices per motion event, regardless of
-        // how many entities or how finely tessellated a polyline is. Unlike
-        // preview_entities this never copies a document entity, tessellates a
-        // curve, or expands a nested block.
-        const MAX_VERTICES: usize = 768;
-        const MAX_WIRES: usize = 48;
-        let mut remaining = MAX_VERTICES;
+        // Source segments were chosen when the selection was made. In a huge
+        // LWPOLYLINE, regularly subsampling all points can miss the only
+        // moving vertex and falsely show a rigid, unchanged outline.
+        // Render only segments adjacent to changed vertices, preserving
+        // the exact join to each fixed neighbor.
         let mut out = Vec::new();
-        for wire in &self.wire_models {
-            if remaining < 2 || out.len() >= MAX_WIRES {
-                break;
-            }
-            // Instances and nested stubs are not raw world-space polylines.
-            // A misleading per-vertex deformation would be worse than the
-            // displacement guide; their committed transform is unchanged.
-            if wire.render_instance.is_some() || wire.stub.is_some() || wire.points.len() < 2 {
-                continue;
-            }
-            let count = wire.points.len();
-            let sample_count = count.min(remaining.min(128).max(2));
-            let mut points = Vec::with_capacity(sample_count);
-            // Choose inclusive endpoints. A simple stride truncated at the
-            // sample cap could omit the final vertex, precisely the endpoint
-            // whose deformation the user most needs to see.
-            for k in 0..sample_count {
-                let index = k * (count - 1) / (sample_count - 1);
-                let mut point = wire_point(wire, index);
-                if vertex_selected(&self.windows, point.x, point.y) {
-                    point += delta;
-                }
-                points.push([point.x, point.y, point.z]);
-            }
+        let mut run: Vec<[f64; 3]> = Vec::new();
+        let mut previous: Option<(usize, usize)> = None;
+        let emit = |points: &mut Vec<[f64; 3]>, out: &mut Vec<WireModel>| {
             if points.len() >= 2 {
-                remaining -= points.len();
-                let mut ghost = WireModel::solid_f64(
-                    "__stretch_lightweight__".into(),
-                    points,
-                    [0.24, 0.76, 0.95, 0.8],
+                let mut wire = WireModel::solid_f64(
+                    "__stretch_live_changed_edges__".into(),
+                    std::mem::take(points),
+                    [0.24, 0.76, 0.95, 0.95],
                     false,
                 );
-                ghost.set_fixed_screen_width(1.2);
-                out.push(ghost);
+                wire.set_fixed_screen_width(1.5);
+                out.push(wire);
+            } else {
+                points.clear();
             }
+        };
+        for span in &self.preview_spans {
+            let a = span.a + if span.a_moves { delta } else { DVec3::ZERO };
+            let b = span.b + if span.b_moves { delta } else { DVec3::ZERO };
+            let adjacent = previous.is_some_and(|(wire, segment)| {
+                wire == span.wire && segment + 1 == span.segment
+            });
+            if !adjacent || run.len() >= 128 {
+                emit(&mut run, &mut out);
+                run.push([a.x, a.y, a.z]);
+            }
+            run.push([b.x, b.y, b.z]);
+            previous = Some((span.wire, span.segment));
         }
+        emit(&mut run, &mut out);
         out
     }
 
@@ -912,11 +961,15 @@ mod shift_stretch_tests {
         let preview = cmd.preview_lightweight_wires(DVec3::new(0.0, 10.0, 0.0));
         assert_eq!(preview.len(), 1);
         assert!(preview[0].points.len() <= 128);
-        assert_eq!(wire_point(&preview[0], 0), DVec3::ZERO);
+        assert_eq!(
+            wire_point(&preview[0], 0),
+            DVec3::new(2046.0, 10.0, 0.0),
+            "only the changed local segments need a live overlay"
+        );
         assert_eq!(
             wire_point(&preview[0], preview[0].points.len() - 1),
             DVec3::new(2047.0, 10.0, 0.0),
-            "even a simplified preview must show the stretched endpoint"
+            "even a 2048-point polyline must show its stretched endpoint"
         );
     }
 
