@@ -3042,6 +3042,13 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// In a resident-preserving (heavy) preview, optionally show a bounded
+    /// wireframe approximation without tessellating complete blocks/entities.
+    /// This avoids a blank live STRETCH preview on dense drawings.
+    fn preview_lightweight_wires(&self, _point: DVec3) -> Vec<WireModel> {
+        Vec::new()
+    }
+
     /// What kind of input the current step expects from the command line.
     /// Default is [`InputKind::Point`].
     fn input_kind(&self) -> InputKind {
