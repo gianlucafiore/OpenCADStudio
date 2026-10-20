@@ -4378,6 +4378,32 @@ mod ext_tests {
     }
 
     #[test]
+    fn tracking_dirs_indexed_candidates_capture_the_incident_edge() {
+        use crate::scene::pick::interaction_index::InteractionIndex;
+        use std::sync::Arc;
+        let wires = Arc::new(vec![
+            WireModel::solid(
+                "far".to_owned(),
+                vec![[1000.0, 1000.0, 0.0], [1200.0, 1000.0, 0.0]],
+                [1.0; 4],
+                false,
+            ),
+            WireModel::solid(
+                "near".to_owned(),
+                vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                [1.0; 4],
+                false,
+            ),
+        ]);
+        let index = InteractionIndex::build(&wires);
+        let candidates = index.query_xy(Arc::clone(&wires), [9.9, -0.1, 10.1, 0.1]);
+        assert!(candidates.segments().is_some());
+        let (edges, _) = tracking_dirs_at(DVec3::new(10.0, 0.0, 0.0), &candidates);
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0] - DVec3::X).length() < 1e-12);
+    }
+
+    #[test]
     fn tracking_dirs_keep_outward_endpoint_direction() {
         let wire = WireModel {
             points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
