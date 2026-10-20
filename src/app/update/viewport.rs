@@ -3824,6 +3824,21 @@ impl OpenCADStudio {
                     }
                 }
             }
+            // STRETCH already renders the real deformed polyline/line as
+            // edited entity geometry. Its additional base-to-cursor
+            // "rubber_band" crosses unrelated parts of large drawings and
+            // makes the shape look torn apart. Hide that redundant guide
+            // only with a full edited-entity preview; keep it for the
+            // lightweight fallback (where no deformation is tessellated).
+            if !keep_resident_preview
+                && self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .is_some_and(|cmd| cmd.name() == "STRETCH")
+            {
+                previews.retain(|wire| wire.name != "rubber_band");
+            }
+
             // Polar tracking guide line: dotted line from last_point along
             // the snapped angle direction, extending across the drawing.
             if self.polar_mode && !needs_entity {
