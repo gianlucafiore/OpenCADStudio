@@ -111,6 +111,44 @@ fn block_actions_rotate_flip_native_bindings_and_marker_edits_roundtrip() {
 }
 
 #[test]
+fn clockwise_rotation_wraps_for_full_circle_but_not_restricted_range() {
+    use super::super::block_orientation_parameter::Kind as O;
+    let (mut doc, def, targets) = fixture();
+    let rotate = orientation(&mut doc, def, O::Rotation);
+    create(&mut doc, def, Kind::Rotate, rotate, &[targets[0]], DVec3::ZERO).unwrap();
+    let baseline = doc.clone();
+
+    // The authored rotation accepts 0..360 degrees. A clockwise -90 degree
+    // request must be represented by its equivalent 270 degree heading.
+    assert!(evaluate(
+        &mut doc, &baseline, def, rotate, DVec3::new(0., -50., 0.)
+    ).unwrap());
+    let p = parameters(&doc, def, Kind::Rotate).remove(0);
+    assert!(current(&doc, &p).distance(DVec3::new(0., -10., 0.)) < 1e-8);
+    assert!(start(&doc, targets[0]).distance(&-Vector3::UNIT_Y) < 1e-8);
+
+    // A genuinely limited 0..90 degree parameter must not wrap negative
+    // angles around to 270 degrees and bypass its explicit range.
+    let mut restricted = baseline.clone();
+    let ObjectType::DynamicBlock(object) = restricted.objects.get_mut(&rotate).unwrap() else {
+        panic!()
+    };
+    let DynamicBlockData::RotationParameter(parameter) = &mut object.data else {
+        panic!()
+    };
+    parameter.value_set.maximum = std::f64::consts::FRAC_PI_2;
+    let restricted_baseline = restricted.clone();
+    assert!(!evaluate(
+        &mut restricted,
+        &restricted_baseline,
+        def,
+        rotate,
+        DVec3::new(0., -50., 0.)
+    ).unwrap());
+    assert_eq!(restricted, restricted_baseline);
+}
+
+#[test]
 fn block_actions_rotate_flip_saved_values_compose_copy_and_roundtrip() {
     use super::super::block_orientation_parameter::Kind as O;
     let (mut doc, def, targets) = fixture();
