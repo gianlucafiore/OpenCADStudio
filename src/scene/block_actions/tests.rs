@@ -157,11 +157,24 @@ fn block_actions_rotate_flip_saved_values_compose_copy_and_roundtrip() {
             .read()
             .unwrap(),
     ];
-    for saved in variants {
+    for (case, saved) in ["in-memory", "DWG roundtrip", "DXF roundtrip"]
+        .into_iter()
+        .zip(variants)
+    {
         let mut next = instance::evaluate(&saved, a, r, DVec3::new(0., -50., 0.))
             .unwrap()
             .unwrap();
-        assert!(instance_line(&next, a).distance(&Vector3::UNIT_Y) < 1e-8);
+        let observed = instance_line(&next, a);
+        let rotate_p = parameters(&next, def, Kind::Rotate).remove(0);
+        let flip_p = parameters(&next, def, Kind::Flip).remove(0);
+        assert!(
+            observed.distance(&Vector3::UNIT_Y) < 1e-8,
+            "{case}: rotation+flip produced {observed:?}, rotation={:?}, flip={:?}, stored_before=({:?},{:?})",
+            instance::value(&next, a, &rotate_p),
+            instance::value(&next, a, &flip_p),
+            instance::value(&saved, a, &rotate_p),
+            instance::value(&saved, a, &flip_p),
+        );
         for _ in 0..6 {
             next = instance::evaluate_value(&next, a, f, Value::Flip(false))
                 .unwrap()
@@ -338,9 +351,10 @@ fn block_actions_saved_xy_polar_cache_metadata_and_rejections() {
         let reopened = DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
             .read()
             .unwrap();
-        assert_eq!(
-            instance::current(&reopened, a, &parameter).unwrap(),
-            DVec3::new(22., 21., 0.)
+        let reread = instance::current(&reopened, a, &parameter).unwrap();
+        assert!(
+            reread.distance(DVec3::new(22., 21., 0.)) < 1e-10,
+            "roundtrip of {kind:?} parameter changed beyond numeric tolerance: {reread:?}"
         );
         assert_eq!(start(&reopened,handles[0]),start(&original,handles[0]));
         assert!(instance::evaluate(&doc, a, p, DVec3::splat(f64::NAN)).is_err());
@@ -586,6 +600,9 @@ fn block_actions_reject_invalid_selection_binding_and_nonfinite_without_mutation
     };
     parameter.value_set.maximum = 15.;
     parameter.value_set.flags |= 2;
+    // Maximum constraints are supported now: the requested length 20
+    // must clamp to 15 rather than return an error. The older assertion
+    // predated interactive value-set enforcement.
     let restricted_baseline = restricted.clone();
     assert!(evaluate(
         &mut restricted,
@@ -593,11 +610,31 @@ fn block_actions_reject_invalid_selection_binding_and_nonfinite_without_mutation
         def,
         p,
         DVec3::new(20., 0., 0.)
-    )
-    .is_err());
+    ).unwrap());
+    let constrained = parameters(&restricted, def, Kind::Move).remove(0);
+    assert!((current(&restricted, &constrained).x - 15.).abs() < 1e-9);
+
+    // Unknown flag bits, unlike the supported maximum constraint,
+    // must still fail atomically and leave the document untouched.
+    let mut unsupported = restricted_baseline.clone();
+    let ObjectType::DynamicBlock(object) = unsupported.objects.get_mut(&p).unwrap() else {
+        panic!()
+    };
+    let DynamicBlockData::LinearParameter(parameter) = &mut object.data else {
+        panic!()
+    };
+    parameter.value_set.flags |= 0x10;
+    let unsupported_baseline = unsupported.clone();
+    assert!(evaluate(
+        &mut unsupported,
+        &unsupported_baseline,
+        def,
+        p,
+        DVec3::new(20., 0., 0.)
+    ).is_err());
     assert_eq!(
-        restricted, restricted_baseline,
-        "unsupported value constraints are not silently ignored"
+        unsupported, unsupported_baseline,
+        "unsupported value-set flags must not be silently ignored"
     );
     let ObjectType::DynamicBlock(o) = doc.objects.get_mut(&action).unwrap() else {
         panic!()
