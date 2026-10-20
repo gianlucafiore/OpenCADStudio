@@ -3824,6 +3824,15 @@ impl OpenCADStudio {
                     }
                 }
             }
+            if keep_resident_preview {
+                // The real selected entities stay resident for performance.
+                // Add only a bounded wireframe silhouette of the deformation,
+                // generated without retessellating the drawing on mouse moves.
+                if let Some(cmd) = self.tabs[i].active_cmd.as_ref() {
+                    previews.extend(cmd.preview_lightweight_wires(effective));
+                }
+            }
+
             // Polar tracking guide line: dotted line from last_point along
             // the snapped angle direction, extending across the drawing.
             if self.polar_mode && !needs_entity {
