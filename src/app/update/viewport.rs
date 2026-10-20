@@ -8514,6 +8514,58 @@ mod rapid_drawing_tests {
     }
 
     #[test]
+    fn stretch_preview_keeps_up_with_throttled_pointer_moves() {
+        use crate::command::{CadCommand, CmdResult};
+        use crate::modules::draw::modify::stretch::{StretchCommand, StretchWindow};
+
+        let mut app = drawing_app("LINE");
+        let i = app.active_tab;
+        let entity = codec::EntityType::Line(codec::entities::Line::from_points(
+            codec::types::Vector3::new(0.0, 0.0, 0.0),
+            codec::types::Vector3::new(10.0, 0.0, 0.0),
+        ));
+        let handle = app.tabs[i].scene.document.add_entity(entity).unwrap();
+        let wires = app.tabs[i].scene.wire_models_for(&[handle]);
+        let mut cmd = StretchCommand::with_windows(
+            vec![handle],
+            wires,
+            vec![StretchWindow::add(
+                glam::DVec3::new(9.0, -1.0, -1.0),
+                glam::DVec3::new(11.0, 1.0, 1.0),
+            )],
+        );
+        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
+        assert!(matches!(cmd.on_point(glam::DVec3::ZERO), CmdResult::NeedPoint));
+        app.tabs[i].active_cmd = Some(Box::new(cmd));
+
+        let first = screen(&app, glam::DVec3::new(10.0, 5.0, 0.0));
+        let _ = app.update(Message::ViewportMove(first));
+        assert!(app.snap_dwell.is_some(), "first move must arm throttle");
+        let before: Vec<_> = app.tabs[i]
+            .scene
+            .preview_wires
+            .iter()
+            .filter(|wire| wire.name != "rubber_band")
+            .flat_map(|wire| wire.points.iter().copied())
+            .collect();
+        assert!(!before.is_empty(), "first move must show the deformed geometry");
+
+        let second = screen(&app, glam::DVec3::new(12.0, 8.0, 0.0));
+        let _ = app.update(Message::ViewportMove(second));
+        let after: Vec<_> = app.tabs[i]
+            .scene
+            .preview_wires
+            .iter()
+            .filter(|wire| wire.name != "rubber_band")
+            .flat_map(|wire| wire.points.iter().copied())
+            .collect();
+        assert_ne!(
+            before, after,
+            "the throttled early-return path must update STRETCH geometry, not wait for idle"
+        );
+    }
+
+    #[test]
     fn rapid_drawing_preview_coalesces_moves_and_flushes_latest_position() {
         for command in ["LINE", "PLINE", "RECTANG", "CIRCLE"] {
             let mut app = drawing_app(command);
