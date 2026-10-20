@@ -3098,18 +3098,33 @@ fn tracking_dirs_at<W: WireSource + ?Sized>(p: DVec3, wires: &W) -> (Vec<DVec3>,
     let mut edges: Vec<DVec3> = Vec::new();
     let mut perps: Vec<DVec3> = Vec::new();
     let mut consider = |a: DVec3, b: DVec3| {
-        if !a.x.is_finite() || !b.x.is_finite() {
-            return false;
-        }
-        let seg_len = {
-            let seg = b - a;
-            (seg.x * seg.x + seg.y * seg.y).sqrt()
-        };
-        if seg_len < 1e-9 {
+        if !a.x.is_finite()
+            || !a.y.is_finite()
+            || !b.x.is_finite()
+            || !b.y.is_finite()
+        {
             return false;
         }
         let at_a = (a - p).length_squared() < tol2;
         let at_b = (b - p).length_squared() < tol2;
+        // Acquisition needs only incident edges or segments passing through
+        // the tracking point. Cull distant segments before sqrt/projection.
+        // Retain full segment bounds, not just endpoints: a perpendicular
+        // reference may lie in the middle of a very long line.
+        if !at_a
+            && !at_b
+            && (p.x < a.x.min(b.x) - tol
+                || p.x > a.x.max(b.x) + tol
+                || p.y < a.y.min(b.y) - tol
+                || p.y > a.y.max(b.y) + tol)
+        {
+            return false;
+        }
+        let seg = b - a;
+        let seg_len = (seg.x * seg.x + seg.y * seg.y).sqrt();
+        if seg_len < 1e-9 {
+            return false;
+        }
 
         if at_a || at_b {
             // Store the outward ray from the acquired endpoint.
@@ -3151,12 +3166,22 @@ fn tracking_dirs_at<W: WireSource + ?Sized>(p: DVec3, wires: &W) -> (Vec<DVec3>,
                 .iter()
                 .any(|(_, hint)| matches!(hint, SnapHint::Quadrant | SnapHint::Center))
     };
-    if let Some(segments) = indexed_segments(wires) {
-        for segment in segments {
-            if wires.source_wire(segment.wire).is_some_and(&is_round) {
+    // Consume indexed segment references directly. Building an intermediate
+    // IndexedSegment Vec here duplicated dense wire geometry just to acquire
+    // a handful of tracking directions after the dwell timer fired.
+    if let Some(segments) = wires.segments() {
+        for reference in segments {
+            let Some(wire) = wires.source_wire(reference.wire) else {
+                continue;
+            };
+            if is_round(wire) {
                 continue;
             }
-            if consider(segment.a, segment.b) {
+            let start = reference.start as usize;
+            if start + 1 >= wire.points.len() {
+                continue;
+            }
+            if consider(wp_f64(wire, start), wp_f64(wire, start + 1)) {
                 break;
             }
         }
@@ -4332,6 +4357,36 @@ mod ext_tests {
         // 3D modes never leak into the 2D set.
         assert!(!s.is_on(SnapType::Vertex));
         assert!(!s.is_on(SnapType::EdgeMidpoint));
+    }
+
+    #[test]
+    fn tracking_dirs_skip_distant_segments_but_keep_interior_perpendicular() {
+        let far = WireModel {
+            points: vec![[1000.0, 1000.0, 0.0], [1200.0, 1000.0, 0.0]],
+            ..Default::default()
+        };
+        let through = WireModel {
+            points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let wires = [far, through];
+        let (edges, perps) = tracking_dirs_at(DVec3::new(5.0, 0.0, 0.0), wires.as_slice());
+        assert!(edges.is_empty());
+        assert_eq!(perps.len(), 1);
+        assert!(perps[0].x.abs() < 1e-12);
+        assert!((perps[0].y.abs() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tracking_dirs_keep_outward_endpoint_direction() {
+        let wire = WireModel {
+            points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let wires = [wire];
+        let (edges, _) = tracking_dirs_at(DVec3::new(10.0, 0.0, 0.0), wires.as_slice());
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0] - DVec3::X).length() < 1e-12);
     }
 
     #[test]
