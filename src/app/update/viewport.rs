@@ -2892,6 +2892,52 @@ impl OpenCADStudio {
                 hit.screen.y += tile_b.y;
             }
             self.tabs[i].snap_result = snap;
+            // A plain point command normally returns early here to avoid
+            // expensive snap queries. STRETCH must nevertheless update its
+            // *geometry preview* on every pointer move. Previously this early
+            // return skipped preview_entities entirely, so the stretch ghost
+            // would only refresh when the cursor settled and SnapDwellTick
+            // re-ran the complete movement handler. Keep the snap throttle,
+            // but explicitly refresh the lightweight command overlay.
+            if self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|cmd| cmd.name() == "STRETCH")
+            {
+                let tab = &mut self.tabs[i];
+                let keep_resident = tab
+                    .active_cmd
+                    .as_ref()
+                    .is_some_and(|cmd| cmd.preview_keep_resident(&tab.scene.document));
+                let mut overlay = tab
+                    .active_cmd
+                    .as_mut()
+                    .map(|cmd| cmd.on_preview_wires(world))
+                    .unwrap_or_default();
+                if keep_resident {
+                    if let Some(cmd) = tab.active_cmd.as_ref() {
+                        overlay.extend(cmd.preview_lightweight_wires(world));
+                    }
+                    // The original entities remain visible and render-cached.
+                    tab.scene.set_command_preview_hidden(&[]);
+                } else {
+                    // Small selections can afford an exact, deformed ghost
+                    // each frame. Only the affected original objects are
+                    // hidden; the mouse click still does a full exact snap.
+                    if let Some(cmd) = tab.active_cmd.as_mut() {
+                        let changed = cmd.preview_entities(&tab.scene.document, world);
+                        overlay.extend(tab.scene.wires_for_entities(&changed));
+                    }
+                    let hidden = tab
+                        .active_cmd
+                        .as_ref()
+                        .map(|cmd| cmd.preview_hidden_handles().to_vec())
+                        .unwrap_or_default();
+                    tab.scene.set_command_preview_hidden(&hidden);
+                }
+                tab.scene.set_preview_wires(overlay);
+            }
+
             // Re-arm the dwell — tick fires SNAP_DWELL_MS after the last move.
             if let Some(dwell) = self.snap_dwell.as_mut() {
                 dwell.last_move_at = Instant::now();
