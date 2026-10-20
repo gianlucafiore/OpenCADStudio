@@ -3563,6 +3563,13 @@ impl OpenCADStudio {
             self.push_ucs_to_cmd(i);
             self.push_ctrl_to_cmd(i);
             let preview_started = perf_move.then(Instant::now);
+            // STRETCH selections with many primitives (especially nested
+            // INSERTs) must not be cloned and recursively tessellated on
+            // every pointer update. Keep the resident drawing visible and
+            // draw only the lightweight displacement guide in that case.
+            let keep_resident_preview = self.tabs[i].active_cmd.as_ref().is_some_and(|cmd| {
+                cmd.preview_keep_resident(&self.tabs[i].scene.document)
+            });
             let mut previews = if needs_structure {
                 let mut p = self.tabs[i]
                     .active_cmd
@@ -3579,8 +3586,10 @@ impl OpenCADStudio {
                 let tab = &mut self.tabs[i];
                 if let Some(cmd) = tab.active_cmd.as_mut() {
                     p.extend(cmd.on_preview_wires_with_tangent(effective, live_tangent));
-                    let entities = cmd.preview_entities(&tab.scene.document, effective);
-                    p.extend(tab.scene.wires_for_entities(&entities));
+                    if !keep_resident_preview {
+                        let entities = cmd.preview_entities(&tab.scene.document, effective);
+                        p.extend(tab.scene.wires_for_entities(&entities));
+                    }
                 }
                 p
             } else if needs_entity && deferred_command_hover {
@@ -3809,7 +3818,7 @@ impl OpenCADStudio {
             if !needs_structure {
                 let tab = &mut self.tabs[i];
                 if let Some(cmd) = tab.active_cmd.as_mut() {
-                    if !cmd.preview_hidden_handles().is_empty() {
+                    if !keep_resident_preview && !cmd.preview_hidden_handles().is_empty() {
                         let entities = cmd.preview_entities(&tab.scene.document, effective);
                         previews.extend(tab.scene.wires_for_entities(&entities));
                     }
@@ -3901,11 +3910,17 @@ impl OpenCADStudio {
                     previews.push(guide);
                 }
             }
-            let preview_hidden = self.tabs[i]
-                .active_cmd
-                .as_ref()
-                .map(|command| command.preview_hidden_handles().to_vec())
-                .unwrap_or_default();
+            let preview_hidden = if keep_resident_preview {
+                // Original objects have not been replaced by ghost geometry.
+                // Hiding them here would make the drawing disappear.
+                Vec::new()
+            } else {
+                self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|command| command.preview_hidden_handles().to_vec())
+                    .unwrap_or_default()
+            };
             self.tabs[i]
                 .scene
                 .set_command_preview_hidden(&preview_hidden);
