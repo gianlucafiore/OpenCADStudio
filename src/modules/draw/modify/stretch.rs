@@ -642,10 +642,10 @@ impl CadCommand for StretchCommand {
     }
 
     fn preview_lightweight_wires(&self, pt: DVec3) -> Vec<WireModel> {
-        let Step::Target { base } = self.step else {
+        let Step::Target { base } = &self.step else {
             return Vec::new();
         };
-        let delta = pt - base;
+        let delta = pt - *base;
         // At most 768 simplified vertices per motion event, regardless of
         // how many entities or how finely tessellated a polyline is. Unlike
         // preview_entities this never copies a document entity, tessellates a
