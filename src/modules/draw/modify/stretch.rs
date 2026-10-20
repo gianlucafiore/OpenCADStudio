@@ -963,8 +963,8 @@ mod shift_stretch_tests {
         assert!(preview[0].points.len() <= 128);
         assert_eq!(
             wire_point(&preview[0], 0),
-            DVec3::new(2046.0, 10.0, 0.0),
-            "only the changed local segments need a live overlay"
+            DVec3::new(2045.0, 0.0, 0.0),
+            "the fixed neighbor of the moved vertex must stay in place"
         );
         assert_eq!(
             wire_point(&preview[0], preview[0].points.len() - 1),
