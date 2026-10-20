@@ -607,10 +607,47 @@ impl CadCommand for StretchCommand {
         }
     }
 
+    fn preview_keep_resident(&self, document: &codec::CadDocument) -> bool {
+        if !matches!(self.step, Step::Target { .. }) {
+            return false;
+        }
+        // Cloning/tessellating all selected INSERTs on *each mouse move* can
+        // recursively expand nested block stubs into many thousands of wires.
+        // Large plain selections, polylines and splines can be expensive too.
+        // Leave resident originals visible and use the cheap displacement
+        // rubber-band instead. The committed stretch remains unchanged.
+        const MAX_FULL_PREVIEW_ENTITIES: usize = 128;
+        const MAX_FULL_PREVIEW_VERTICES: usize = 1024;
+        if self.handles.len() > MAX_FULL_PREVIEW_ENTITIES {
+            return true;
+        }
+        let mut vertices = 0usize;
+        for handle in &self.handles {
+            match document.get_entity(*handle) {
+                Some(codec::EntityType::Insert(_)) => return true,
+                Some(codec::EntityType::LwPolyline(p)) => vertices = vertices.saturating_add(p.vertices.len()),
+                Some(codec::EntityType::Polyline2D(p)) => vertices = vertices.saturating_add(p.vertices.len()),
+                Some(codec::EntityType::Polyline3D(p)) => vertices = vertices.saturating_add(p.vertices.len()),
+                Some(codec::EntityType::Polyline(p)) => vertices = vertices.saturating_add(p.vertices.len()),
+                Some(codec::EntityType::Spline(p)) => {
+                    vertices = vertices.saturating_add(p.control_points.len()).saturating_add(p.fit_points.len());
+                }
+                _ => {}
+            }
+            if vertices > MAX_FULL_PREVIEW_VERTICES {
+                return true;
+            }
+        }
+        false
+    }
+
     fn preview_entities(&mut self, document: &codec::CadDocument, pt: DVec3) -> Vec<codec::EntityType> {
         let Step::Target { base } = &self.step else {
             return Vec::new();
         };
+        if self.preview_keep_resident(document) {
+            return Vec::new();
+        }
         let delta = pt - *base;
         self.handles
             .iter()
@@ -756,6 +793,41 @@ mod shift_stretch_tests {
         };
         assert_eq!(windows.len(), 1);
         assert!(windows[0].subtract);
+    }
+
+    #[test]
+    fn large_or_block_stretch_keeps_originals_during_live_preview() {
+        let mut document = codec::CadDocument::new();
+        let a = document.add_entity(line()).expect("line");
+        let mut dense = StretchCommand::with_windows(
+            vec![a; 129],
+            vec![],
+            vec![region(-1.0, -1.0, 1.0, 1.0, false)],
+        );
+        dense.step = Step::Target { base: DVec3::ZERO };
+        assert!(dense.preview_keep_resident(&document));
+        assert!(dense.preview_entities(&document, DVec3::new(0.0, 5.0, 0.0)).is_empty());
+        assert_eq!(dense.on_preview_wires(DVec3::new(0.0, 5.0, 0.0)).len(), 1);
+
+        let b = document.add_entity(EntityType::Insert(codec::entities::Insert::new(
+            "LARGE_BLOCK", Vector3::ZERO,
+        ))).expect("insert");
+        let mut block = StretchCommand::with_windows(
+            vec![b], vec![], vec![region(-1.0, -1.0, 1.0, 1.0, false)],
+        );
+        block.step = Step::Target { base: DVec3::ZERO };
+        assert!(block.preview_keep_resident(&document));
+        assert!(block.preview_entities(&document, DVec3::new(3.0, 0.0, 0.0)).is_empty());
+        // The original geometry is never modified by the preview.
+        let EntityType::Insert(ref ins) = document.get_entity(b).unwrap() else { panic!("insert") };
+        assert_eq!(ins.insert_point, Vector3::ZERO);
+
+        let mut small = StretchCommand::with_windows(
+            vec![a], vec![], vec![region(-1.0, -1.0, 11.0, 1.0, false)],
+        );
+        small.step = Step::Target { base: DVec3::ZERO };
+        assert!(!small.preview_keep_resident(&document));
+        assert_eq!(small.preview_entities(&document, DVec3::new(0.0, 5.0, 0.0)).len(), 1);
     }
 
     #[test]
