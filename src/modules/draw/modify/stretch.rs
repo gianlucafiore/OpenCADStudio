@@ -664,29 +664,19 @@ impl CadCommand for StretchCommand {
             if wire.render_instance.is_some() || wire.stub.is_some() || wire.points.len() < 2 {
                 continue;
             }
-            let cap = remaining.min(128).max(2);
             let count = wire.points.len();
-            let stride = ((count - 1) / (cap - 1)).max(1);
-            let mut points = Vec::with_capacity(cap);
-            for index in (0..count).step_by(stride) {
+            let sample_count = count.min(remaining.min(128).max(2));
+            let mut points = Vec::with_capacity(sample_count);
+            // Choose inclusive endpoints. A simple stride truncated at the
+            // sample cap could omit the final vertex, precisely the endpoint
+            // whose deformation the user most needs to see.
+            for k in 0..sample_count {
+                let index = k * (count - 1) / (sample_count - 1);
                 let mut point = wire_point(wire, index);
                 if vertex_selected(&self.windows, point.x, point.y) {
                     point += delta;
                 }
                 points.push([point.x, point.y, point.z]);
-                if points.len() == cap {
-                    break;
-                }
-            }
-            if points.len() < cap && count > 1 {
-                let mut last = wire_point(wire, count - 1);
-                if vertex_selected(&self.windows, last.x, last.y) {
-                    last += delta;
-                }
-                let last = [last.x, last.y, last.z];
-                if points.last() != Some(&last) {
-                    points.push(last);
-                }
             }
             if points.len() >= 2 {
                 remaining -= points.len();
