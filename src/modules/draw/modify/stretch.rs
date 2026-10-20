@@ -894,6 +894,33 @@ mod shift_stretch_tests {
     }
 
     #[test]
+    fn lightweight_stretch_preview_keeps_deformed_endpoint_with_large_polyline() {
+        let model = WireModel::solid_f64(
+            "large_selected_polyline".into(),
+            (0..2048)
+                .map(|x| [x as f64, 0.0, 0.0])
+                .collect(),
+            WireModel::CYAN,
+            false,
+        );
+        let mut cmd = StretchCommand::with_windows(
+            vec![Handle::new(10); 129],
+            vec![model],
+            vec![region(2046.0, -1.0, 2048.0, 1.0, false)],
+        );
+        cmd.step = Step::Target { base: DVec3::ZERO };
+        let preview = cmd.preview_lightweight_wires(DVec3::new(0.0, 10.0, 0.0));
+        assert_eq!(preview.len(), 1);
+        assert!(preview[0].points.len() <= 128);
+        assert_eq!(wire_point(&preview[0], 0), DVec3::ZERO);
+        assert_eq!(
+            wire_point(&preview[0], preview[0].points.len() - 1),
+            DVec3::new(2047.0, 10.0, 0.0),
+            "even a simplified preview must show the stretched endpoint"
+        );
+    }
+
+    #[test]
     fn stretch_preview_replaces_hidden_original_with_modified_geometry() {
         let mut document = codec::CadDocument::new();
         let handle = document.add_entity(line()).expect("add line");
