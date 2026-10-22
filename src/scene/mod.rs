@@ -16292,28 +16292,56 @@ mod interaction_motion_index_tests {
         let cursor = glam::DVec3::ZERO;
 
         let motion = scene.interaction_motion_candidates_near(
-            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+            Arc::clone(&wires),
+            cursor,
+            view,
+            eye,
+            bounds,
+            25.0,
         );
-        assert!(motion.is_indexed(), "motion without a ready index must defer");
+        assert!(
+            motion.is_indexed(),
+            "motion without a ready index must defer"
+        );
         assert_eq!(motion.len(), 0, "no full-scene scan on the UI thread");
 
         let click = scene.interaction_candidates_near(
-            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+            Arc::clone(&wires),
+            cursor,
+            view,
+            eye,
+            bounds,
+            25.0,
         );
-        assert!(click.len() >= 4_000, "clicks must retain the exact fallback");
+        assert!(
+            click.len() >= 4_000,
+            "clicks must retain the exact fallback"
+        );
 
-        let (epoch, source) = scene.interaction_index_build_key(&wires, bounds.height)
+        let (epoch, source) = scene
+            .interaction_index_build_key(&wires, bounds.height)
             .expect("edited resident model should request an index");
         scene.mark_interaction_index_pending(epoch, source);
         let index = Arc::new(InteractionIndex::build(&wires));
         assert!(scene.install_prepared_interaction_index(
-            epoch, source, Arc::downgrade(&wires), index,
+            epoch,
+            source,
+            Arc::downgrade(&wires),
+            index,
         ));
         let indexed_motion = scene.interaction_motion_candidates_near(
-            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+            Arc::clone(&wires),
+            cursor,
+            view,
+            eye,
+            bounds,
+            25.0,
         );
         assert!(indexed_motion.is_indexed());
-        assert!(indexed_motion.len() < 4_000, "ready index limits the cursor query");
+        assert!(
+            indexed_motion.len() < 4_000,
+            "ready index limits the cursor query"
+        );
     }
 }
 
