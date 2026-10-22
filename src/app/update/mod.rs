@@ -2866,11 +2866,16 @@ impl OpenCADStudio {
             }
 
             Message::CommandInput(s) => {
-                // A focused native text input also receives Ctrl+V from the OS.
-                // With copied CAD objects, that shortcut belongs to PASTECLIP.
-                // Do not interpret unrelated system clipboard text as a command.
-                // Text-only paste and normal typing are unchanged.
-                if self.ctrl_down && !self.clipboard.is_empty() {
+                // Native text_input may paste the OS clipboard on Ctrl+V
+                // before the drawing's PASTECLIP shortcut resolves. With CAD
+                // entities copied, reject a multi-character buffer jump so a
+                // shell command or full PERF log cannot execute as CAD input.
+                // Keep single-character edits working (e.g. AltGr on layouts
+                // that report it as Ctrl+Alt); text-only paste is unaffected.
+                if self.ctrl_down
+                    && !self.clipboard.is_empty()
+                    && s.chars().count() > self.command_line.input.chars().count() + 1
+                {
                     return Task::none();
                 }
                 // Space submits (acts like Enter) so a command advances
