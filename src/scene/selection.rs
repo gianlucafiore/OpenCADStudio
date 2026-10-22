@@ -1623,6 +1623,14 @@ mod tests {
         use codec::types::Vector3;
 
         let mut scene = Scene::new();
+        scene.define_block_raw(
+            "PALM_TEST",
+            Vector3::new(0.0, 0.0, 0.0),
+            vec![EntityType::Line(Line::from_points(
+                Vector3::ZERO,
+                Vector3::new(2.0, 0.0, 0.0),
+            ))],
+        );
         let annotation = scene.add_entity(EntityType::Line(Line::from_points(
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(1.0, 0.0, 0.0),
@@ -1636,14 +1644,6 @@ mod tests {
         let indexed_epoch = scene.leaders_by_annotation_cache.borrow().as_ref().unwrap().0;
         scene.deselect_all();
 
-        scene.define_block_raw(
-            "PALM_TEST",
-            Vector3::new(0.0, 0.0, 0.0),
-            vec![EntityType::Line(Line::from_points(
-                Vector3::ZERO,
-                Vector3::new(2.0, 0.0, 0.0),
-            ))],
-        );
         scene.add_entity(EntityType::Insert(Insert::new(
             "PALM_TEST".to_string(),
             Vector3::new(10.0, 0.0, 0.0),
