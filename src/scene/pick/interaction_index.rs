@@ -1929,6 +1929,8 @@ impl InteractionCandidates {
         if !self.iter().any(|wire| wire.stub.is_some()) {
             return self;
         }
+        let started = crate::perf::enabled().then(iced::time::Instant::now);
+        let source_count = self.len();
         let mut wires = Vec::new();
         for wire in self.iter() {
             crate::scene::model::instance_model::expand_stub_near_into(
@@ -1936,6 +1938,84 @@ impl InteractionCandidates {
                 self.query_aabb,
                 &mut wires,
             );
+        }
+        if let Some(started) = started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 16.7 {
+                crate::perf_record!(
+                    "[perf] interaction-stub-expand {:.1}ms source_wires={} expanded_wires={} query_xy={}",
+                    elapsed_ms, source_count, wires.len(), self.query_aabb.is_some(),
+                );
+            }
+        }
+        Self {
+            query_aabb: self.query_aabb,
+            screen_rect: self.screen_rect,
+            screen_view: self.screen_view,
+            ..Self::all(Arc::new(wires))
+        }
+    }
+
+    /// Fast path for an axis-aligned, top-down 2-D crossing selection.
+    /// A stub whose *entire* conservative XY AABB lies within the requested
+    /// window is certainly intersected; an inexpensive two-point carrier
+    /// gives the existing box hit test the same handle without expanding
+    /// every leaf of a repeated block (10+ million copies in large drawings).
+    ///
+    /// Stubs touching/crossing the border are expanded exactly. Window
+    /// (non-crossing), rotated, tilted, perspective, and snap queries must
+    /// continue through `materialize_stubs` unchanged.
+    pub(crate) fn materialize_stubs_for_crossing_xy_box(
+        self,
+        box_xy: [f64; 4],
+    ) -> Self {
+        if !self.iter().any(|wire| wire.stub.is_some()) {
+            return self;
+        }
+        let started = crate::perf::enabled().then(iced::time::Instant::now);
+        let source_count = self.len();
+        let mut wires = Vec::new();
+        let mut skipped = 0usize;
+        for wire in self.iter() {
+            let b = wire.aabb.map(f64::from);
+            let covered = wire.stub.is_some()
+                && wire.display_visible
+                && !wire.reference_only
+                && b.iter().all(|n| n.is_finite() && n.abs() < 1.0e15)
+                && b[0] <= b[2] && b[1] <= b[3]
+                && b[0] >= box_xy[0] && b[1] >= box_xy[1]
+                && b[2] <= box_xy[2] && b[3] <= box_xy[3];
+            if covered {
+                // A crossing window only needs a segment definitely inside.
+                // This is never used for the enclosing-window semantics.
+                let mx = (b[0] + b[2]) * 0.5;
+                let my = (b[1] + b[3]) * 0.5;
+                let mut carrier = WireModel::solid_f64(
+                    wire.name.clone(),
+                    vec![[mx, my, 0.0], [mx + (b[2]-b[0])*1e-6, my, 0.0]],
+                    wire.color,
+                    wire.selected,
+                );
+                carrier.reference_only = wire.reference_only;
+                carrier.snap_only = false;
+                wires.push(carrier);
+                skipped += 1;
+            } else {
+                crate::scene::model::instance_model::expand_stub_near_into(
+                    wire,
+                    self.query_aabb,
+                    &mut wires,
+                );
+            }
+        }
+        if let Some(started) = started {
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed >= 1.0 {
+                crate::perf_record!(
+                    "[perf] crossing-stub-coverage {:.1}ms source_wires={} expanded_wires={} enclosed_stubs={}",
+                    elapsed, source_count, wires.len(), skipped,
+                );
+            }
         }
         Self {
             query_aabb: self.query_aabb,
@@ -2662,6 +2742,43 @@ mod area_query_tests {
             Some(vec![seg(2), seg(0), seg(1), seg(0)]),
             "the other categories are appended as they come",
         );
+    }
+
+    #[test]
+    fn covered_stub_shortcut_preserves_exact_boundary_stubs() {
+        use crate::scene::model::instance_model::stub_wire;
+        let mut proto_line = WireModel::solid(
+            "leaf".into(),
+            vec![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0],
+                 [1.0, 0.5, 0.0], [1.0, 1.0, 0.0]],
+            WireModel::WHITE,
+            false,
+        );
+        proto_line.aabb = [0.0, 0.0, 1.0, 1.0];
+        let prototype = Arc::new(vec![proto_line]);
+        let mut wholly_inside = stub_wire(
+            Arc::clone(&prototype), [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0], 0.0,
+        );
+        wholly_inside.name = "11".into();
+        let mut touches_edge = stub_wire(
+            prototype, [0.0, 0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0], 0.0,
+        );
+        touches_edge.name = "12".into();
+        let candidates = InteractionCandidates::all(Arc::new(vec![
+            wholly_inside, touches_edge,
+        ]));
+        let quick = candidates.materialize_stubs_for_crossing_xy_box(
+            [-0.1, -0.1, 1.1, 1.1],
+        );
+        assert_eq!(quick.len(), 2);
+        assert_eq!(quick.get(0).unwrap().name, "11");
+        assert_eq!(quick.get(0).unwrap().points.len(), 2,
+            "fully contained block becomes one crossing carrier");
+        assert_eq!(quick.get(1).unwrap().name, "12");
+        assert_eq!(quick.get(1).unwrap().points.len(), 4,
+            "boundary block must retain the exact leaf");
     }
 
     // World (x,y) → screen ((x+1)*100, (1-y)*100) over a 200×200 viewport, the

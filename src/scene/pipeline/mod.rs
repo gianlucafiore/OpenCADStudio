@@ -122,6 +122,9 @@ pub struct Pipeline {
     wire_xray_pipeline: wgpu::RenderPipeline,
     /// Sample-count-one preview pipeline composited after the cached scene blit.
     wire_preview_overlay_pipeline: wgpu::RenderPipeline,
+    /// Sample-count-one preview of instanced block wires, composited over
+    /// the cached resolved scene just like ordinary wire previews.
+    block_wire_preview_overlay_pipeline: wgpu::RenderPipeline,
     pub(in crate::scene) preview_overlay_direct: bool,
     circle_xray_pipeline: wgpu::RenderPipeline,
     ellipse_xray_pipeline: wgpu::RenderPipeline,
@@ -1058,6 +1061,39 @@ impl Pipeline {
             false,
             wgpu::CompareFunction::Always,
         );
+        // Direct compositing has no MSAA/depth/stencil attachments. Only use
+        // this pipeline when the viewport covers the entire pixel-aligned
+        // raster with no active clip (gated in view/render.rs).
+        let block_wire_preview_overlay_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("block_wire_preview_overlay.pipeline"),
+                layout: Some(&block_wire_layout),
+                vertex: wgpu::VertexState {
+                    module: &block_wire_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: block_wire_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &block_wire_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
 
         // ── Hatch pipeline ─────────────────────────────────────────────────
         // Binding 0 carries the fill plane; boundary and family data are
@@ -2394,6 +2430,7 @@ impl Pipeline {
             block_wire_black_pipeline,
             wire_xray_pipeline,
             wire_preview_overlay_pipeline,
+            block_wire_preview_overlay_pipeline,
             preview_overlay_direct: false,
             circle_pipeline,
             circle_xray_pipeline,
@@ -2863,6 +2900,8 @@ impl Pipeline {
         }
         // Gather borrowed highlighted wires via the prebuilt index —
         // O(highlighted), no per-wire string parse or deep geometry clone.
+        // Keep proxy storage alive through classification and upload.
+        let mut mass_selected_proxy_storage: Vec<WireModel> = Vec::new();
         let mut selected_wires: Vec<&WireModel> = Vec::new();
         let mut hover_wires: Vec<&WireModel> = Vec::new();
         for h in selected {
@@ -2905,6 +2944,36 @@ impl Pipeline {
                 selected_wires.push(wire);
             } else {
                 hover_wires.push(wire);
+            }
+        }
+        // Avoid a second 320+ MiB block arena for 13,000 selected palms.
+        // For extreme 2-D selections, render one blue conservative outline per
+        // instance instead of duplicating all resident block segment geometry.
+        // Individual and moderate selections still get exact blue leaves.
+        if selected.len() > 512 && selected_tint.is_some() {
+            let (outlines, replaced) =
+                crate::scene::model::instance_model::mass_stub_outlines(
+                    selected_wires.iter().copied(),
+                    2048,
+                );
+            if !replaced.is_empty() {
+                let before = selected_wires.len();
+                // The complete INSERT contains ordinary/analytic child
+                // wires alongside the stubs. The one-per-INSERT proxy covers
+                // all of them, otherwise we still double-highlight the leaves.
+                selected_wires.retain(|wire| {
+                    !crate::scene::model::instance_model::mass_stub_wire_is_proxied(
+                        wire, &replaced
+                    )
+                });
+                mass_selected_proxy_storage = outlines;
+                selected_wires.extend(mass_selected_proxy_storage.iter());
+                crate::perf_record!(
+                    "[perf] mass-block-highlight input_wires={} output_wires={} outlines={}",
+                    before,
+                    selected_wires.len(),
+                    replaced.len(),
+                );
             }
         }
         let t_gather = perf_started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
@@ -5429,6 +5498,21 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                     0..6,
                     wire.first_instance..wire.first_instance + wire.instance_count,
                 );
+            }
+            // Reuse the instanced block buffers directly. The expensive base
+            // raster no longer needs rebuilding whenever MOVE/COPY shifts an
+            // INSERT composed only of wires.
+            if self
+                .gpu_preview_block_wires
+                .iter()
+                .any(|wire| wire.instance_count > 0)
+            {
+                pass.set_pipeline(&self.block_wire_preview_overlay_pipeline);
+                for wire in &self.gpu_preview_block_wires {
+                    if wire.instance_count > 0 {
+                        bind_and_draw_block_wire(&mut pass, wire);
+                    }
+                }
             }
         }
     }

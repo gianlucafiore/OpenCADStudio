@@ -10711,6 +10711,42 @@ impl Scene {
     }
 
     /// Return a stable build key when this source needs its large
+    /// A cold click/window must be exact even when the asynchronous spatial
+    /// index has not finished. For large drawings, building that index once is
+    /// much cheaper than expanding millions of stubbed block segments for
+    /// every unindexed hit test. Hover and snap keep their nonblocking path.
+    fn on_demand_pick_index(
+        &self,
+        wires: &Arc<Vec<WireModel>>,
+        allow_pending_empty: bool,
+        snap: Option<SnapQueryCategory>,
+    ) -> Option<Arc<InteractionIndex>> {
+        if allow_pending_empty || snap.is_some() || !self.interaction_index_worthwhile(wires) {
+            return None;
+        }
+        // A click should not spend time indexing a handful of plain wires.
+        // "estimated_work" also catches large compound / block-stub geometry.
+        if wires.len() < Self::INTERACTION_INDEX_MIN_WIRES
+            && InteractionIndex::estimated_work(wires) < Self::INTERACTION_INDEX_MIN_WORK
+        {
+            return None;
+        }
+        if let Some(existing) = self.cached_interaction_index(wires) {
+            return Some(existing);
+        }
+        let started = crate::perf::enabled().then(iced::time::Instant::now);
+        let index = Arc::new(InteractionIndex::build(wires));
+        self.cache_interaction_index(self.geometry_epoch, Arc::clone(wires), Arc::clone(&index));
+        if let Some(started) = started {
+            crate::perf_record!(
+                "[perf] interaction-pick-cold-index build={:.1}ms source_wires={}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                wires.len()
+            );
+        }
+        Some(index)
+    }
+
     /// interaction index. The app uses it to deduplicate background builds.
     pub fn interaction_index_build_key(
         &self,
@@ -11046,7 +11082,9 @@ impl Scene {
             }
             return result;
         }
-        if let Some(index) = self.cached_interaction_index(&wires) {
+        if let Some(index) = self.cached_interaction_index(&wires).or_else(|| {
+            self.on_demand_pick_index(&wires, allow_pending_empty, snap)
+        }) {
             direct(&index, wires)
         } else {
             self.unindexed_interaction_candidates(wires, allow_pending_empty, snap)
@@ -11220,7 +11258,9 @@ impl Scene {
             }
             return result;
         }
-        if let Some(index) = self.cached_interaction_index(&wires) {
+        if let Some(index) = self.cached_interaction_index(&wires).or_else(|| {
+            self.on_demand_pick_index(&wires, allow_pending_empty, snap)
+        }) {
             direct(&index, wires)
         } else {
             self.unindexed_interaction_candidates(wires, allow_pending_empty, snap)
@@ -11591,6 +11631,53 @@ impl Scene {
                 None,
             )
         }
+    }
+
+    /// Rectangular selection-specific candidate path. For a crossing box in
+    /// a top/down, axis-aligned view, a completely enclosed instanced block
+    /// stub is guaranteed to hit the box; do not materialize all its leaves.
+    /// Other view orientations and enclosing-window selection stay on the
+    /// original exact hit-test path.
+    pub fn interaction_candidates_for_box(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+        screen_rect: [f32; 4],
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        crossing: bool,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        let axis_aligned_top =
+            view_rot.z_axis.x.abs() < 1e-9
+            && view_rot.z_axis.y.abs() < 1e-9
+            && view_rot.x_axis.y.abs() < 1e-9
+            && view_rot.y_axis.x.abs() < 1e-9
+            && (view_rot.w_axis.w - 1.0).abs() < 1e-6;
+        if !crossing || !axis_aligned_top
+            || !self.interaction_source_is_resident(&wires, bounds.height)
+            || !self.interaction_index_worthwhile(&wires)
+        {
+            return self.interaction_candidates_in_aabb(
+                wires, aabb, screen_rect, view_rot, eye, bounds,
+            );
+        }
+        let pad_px = self.indexed_interaction_pick_radius(
+            &wires, 0.0, bounds.height, true,
+        );
+        let scale_x = ((view_rot.x_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.x_axis.y * bounds.height * 0.5).powi(2)).sqrt();
+        let scale_y = ((view_rot.y_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.y_axis.y * bounds.height * 0.5).powi(2)).sqrt();
+        let scale = scale_x.min(scale_y);
+        let pad = if scale > 1e-6 { pad_px as f64 / scale as f64 } else { 0.0 };
+        self.indexed_interaction_candidates_xy_stubbed(
+            wires,
+            [aabb[0]-pad, aabb[1]-pad, aabb[2]+pad, aabb[3]+pad],
+            false,
+            true,
+            None,
+        ).materialize_stubs_for_crossing_xy_box(aabb)
     }
 
     pub fn interaction_candidate_handles(
@@ -16294,5 +16381,39 @@ mod world_box_handle_tests {
         assert!(handles.contains(&near_line) && handles.contains(&near_block));
         assert!(!handles.contains(&far_block), "far block copy joined the box");
         assert!(!handles.contains(&far_line), "far line joined the box");
+    }
+}
+
+#[cfg(test)]
+mod cold_wire_block_pick_index_tests {
+    use super::*;
+
+    #[test]
+    fn cold_large_pick_builds_and_reuses_exact_spatial_index() {
+        let scene = Scene::new();
+        let wires = Arc::new((0..4096).map(|i| {
+            let x = i as f32 * 10.0;
+            WireModel {
+                name: (i + 1).to_string(),
+                points: vec![[x, 0.0, 0.0], [x + 2.0, 0.0, 0.0]],
+                aabb: [x, 0.0, x + 2.0, 0.0],
+                ..WireModel::default()
+            }
+        }).collect::<Vec<_>>());
+
+        // Background hover must not block waiting to build the expensive index.
+        assert!(scene.on_demand_pick_index(&wires, true, None).is_none());
+        assert!(scene.cached_interaction_index(&wires).is_none());
+
+        // Actual click cannot silently miss a candidate: construct and cache
+        // the complete spatial index before querying.
+        let first = scene.on_demand_pick_index(&wires, false, None).unwrap();
+        let second = scene.on_demand_pick_index(&wires, false, None).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let near = first.query_xy(Arc::clone(&wires), [19.0, -1.0, 23.0, 1.0]);
+        assert!(near.len() > 0);
+        assert!(near.len() < wires.len());
+        let far = first.query_xy(Arc::clone(&wires), [-10000.0, -10000.0, -9990.0, -9990.0]);
+        assert_eq!(far.len(), 0, "spatial broad phase must exclude distant wires");
     }
 }
