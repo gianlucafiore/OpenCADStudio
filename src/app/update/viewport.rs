@@ -2981,6 +2981,10 @@ impl OpenCADStudio {
             self.snap_dwell = None;
         }
 
+        // A freshly edited drawing may not have a resident interaction index
+        // until idle hover rebuilds it. Kick off the background build on
+        // command motion instead; never pay a full-scene scan per mouse event.
+        let mut command_interaction_index_task: Option<Task<Message>> = None;
         if self.tabs[i].active_cmd.is_some() {
             let (vw, vh) = vp_size;
             let bounds = iced::Rectangle {
@@ -3034,8 +3038,10 @@ impl OpenCADStudio {
                 };
             let hit_test_ms = crate::perf::elapsed_ms(hit_test_started);
             let all_wire_count = all_wires.len();
+            command_interaction_index_task =
+                self.prepare_interaction_index_task(i, Arc::clone(&all_wires), bounds.height);
             let candidate_started = perf_move.then(Instant::now);
-            let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
+            let snap_candidates = self.tabs[i].scene.interaction_motion_candidates_near(
                 all_wires,
                 snap_cursor,
                 view_rot,
@@ -4015,7 +4021,7 @@ impl OpenCADStudio {
             };
             crate::perf_record!("[perf] pointer-move mode={mode:<7} {:>7.1}ms", move_ms,);
         }
-        Task::none()
+        command_interaction_index_task.unwrap_or_else(Task::none)
     }
 
     /// Whether a middle-button drag orbits rather than pans, by the
