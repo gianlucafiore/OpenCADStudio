@@ -166,8 +166,18 @@ impl OpenCADStudio {
     fn dispatch_command_inner(&mut self, cmd: &str, allow_suggest: bool) -> Task<Message> {
         self.try_dispatch_command(cmd, allow_suggest)
             .unwrap_or_else(|| {
+                // Invalid clipboard text can contain entire PERF logs. Never
+                // duplicate an arbitrarily large command in the visible
+                // history: it can itself stall command-line rendering.
+                let mut chars = cmd.chars();
+                let prefix: String = chars.by_ref().take(180).collect();
+                let excerpt = if chars.next().is_some() {
+                    format!("{prefix}…")
+                } else {
+                    prefix
+                };
                 self.command_line
-                    .push_error(crate::tf!("Unknown command: {cmd}").as_ref());
+                    .push_error(crate::tf!("Unknown command: {excerpt}").as_ref());
                 self.finish_dispatch(cmd)
             })
     }
