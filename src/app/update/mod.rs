@@ -2866,6 +2866,13 @@ impl OpenCADStudio {
             }
 
             Message::CommandInput(s) => {
+                // A focused native text input also receives Ctrl+V from the OS.
+                // With copied CAD objects, that shortcut belongs to PASTECLIP.
+                // Do not interpret unrelated system clipboard text as a command.
+                // Text-only paste and normal typing are unchanged.
+                if self.ctrl_down && !self.clipboard.is_empty() {
+                    return Task::none();
+                }
                 // Space submits (acts like Enter) so a command advances
                 // token-by-token, matching CAD convention. A leading `>` switches
                 // to literal-space mode so an argument containing spaces (a text
@@ -13201,6 +13208,43 @@ mod free_text_entry_tests {
         ));
         assert_eq!(app.command_line.input, "EXISTING");
         assert!(app.tabs[0].active_cmd.is_none());
+    }
+
+    #[test]
+    fn cad_clipboard_paste_shortcut_does_not_submit_system_clipboard_text() {
+        use crate::app::PasteFocus;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.clipboard = vec![codec::EntityType::Line(codec::entities::Line::default())];
+
+        // The command-line input can arrive before the global paste shortcut
+        // resolves the focused widget. System text must not run as a command.
+        app.ctrl_down = true;
+        let _ = app.update(Message::CommandInput("cargo build --release".into()));
+        assert!(app.command_line.input.is_empty());
+        assert!(app.tabs[0].active_cmd.is_none());
+
+        // Ctrl+V still starts CAD paste while the command field holds focus.
+        let _ = app.update(Message::PasteShortcutResolved(PasteFocus::CommandLine));
+        assert!(app.tabs[0]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|cmd| cmd.name() == "PASTECLIP"));
+
+        app.ctrl_down = false;
+        let _ = app.update(Message::CommandInput("LINE".into()));
+        assert_eq!(app.command_line.input, "LINE");
+    }
+
+    #[test]
+    fn system_text_paste_is_accepted_without_cad_clipboard_objects() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+
+        app.ctrl_down = true;
+        let _ = app.update(Message::CommandInput("MYTEXT".into()));
+        assert_eq!(app.command_line.input, "MYTEXT");
     }
 
     #[test]
