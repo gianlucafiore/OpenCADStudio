@@ -13228,6 +13228,8 @@ mod free_text_entry_tests {
         app.ctrl_down = true;
         let _ = app.update(Message::CommandInput("cargo build --release".into()));
         assert!(app.command_line.input.is_empty());
+        let _ = app.update(Message::CommandInput("[perf] frame-interval 123.0ms".into()));
+        assert!(app.command_line.input.is_empty());
         assert!(app.tabs[0].active_cmd.is_none());
 
         // Ctrl+V still starts CAD paste while the command field holds focus.
@@ -13250,6 +13252,17 @@ mod free_text_entry_tests {
         app.ctrl_down = true;
         let _ = app.update(Message::CommandInput("MYTEXT".into()));
         assert_eq!(app.command_line.input, "MYTEXT");
+    }
+
+    #[test]
+    fn cad_clipboard_does_not_block_altgr_style_single_char_edits() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.clipboard = vec![codec::EntityType::Line(codec::entities::Line::default())];
+
+        app.ctrl_down = true;
+        let _ = app.update(Message::CommandInput("@".into()));
+        assert_eq!(app.command_line.input, "@");
     }
 
     #[test]
