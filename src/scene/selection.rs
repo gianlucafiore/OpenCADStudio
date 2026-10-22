@@ -36,13 +36,23 @@ impl Scene {
     /// Every LEADER that points at `annotation`, resolved once per
     /// `geometry_epoch` rather than by walking the document per handle.
     fn leaders_by_annotation(&self) -> std::cell::Ref<'_, (u64, HashMap<Handle, Vec<Handle>>)> {
-        {
-            let cache = self.leaders_by_annotation_cache.borrow();
-            if cache
-                .as_ref()
-                .is_some_and(|(epoch, _)| *epoch == self.geometry_epoch)
-            {
-                drop(cache);
+        // Plain INSERT/LINE edits must not trigger a full document scan for
+        // LEADER annotation links on the next selection. Reuse the index when
+        // the geometry journal proves no LEADER was added, edited or removed.
+        // Removed LEADERs are classified before deletion in the journal.
+        let cached_epoch = self
+            .leaders_by_annotation_cache
+            .borrow()
+            .as_ref()
+            .map(|(epoch, _)| *epoch);
+        if let Some(epoch) = cached_epoch {
+            if self.category_cache_valid(epoch, CACHE_CATEGORY_LEADER, |handle| {
+                matches!(self.document.get_entity(handle), Some(EntityType::Leader(_)))
+            }) {
+                if epoch != self.geometry_epoch {
+                    self.leaders_by_annotation_cache.borrow_mut().as_mut().unwrap().0 =
+                        self.geometry_epoch;
+                }
                 return std::cell::Ref::map(self.leaders_by_annotation_cache.borrow(), |c| {
                     c.as_ref().unwrap()
                 });
