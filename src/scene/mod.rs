@@ -11332,6 +11332,34 @@ impl Scene {
         )
     }
 
+    /// Full-feature candidate query for *motion* during an active command.
+    ///
+    /// An edit (including PASTECLIP) may invalidate the spatial index. While
+    /// the replacement is being built, do not expand every block and scan the
+    /// entire resident drawing for every queued mouse move. Pointer-down still
+    /// uses interaction_candidates_near, which remains fully authoritative.
+    pub fn interaction_motion_candidates_near(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        self.interaction_candidates_near_impl(
+            wires,
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            radius_px,
+            false,
+            true,
+            Some(SnapQueryCategory::Full),
+        )
+    }
+
     /// Fast cursor preview query. If the resident index is still being built,
     /// return an empty indexed result instead of scanning the entire drawing;
     /// the settled/click snap path continues to use the complete fallback.
