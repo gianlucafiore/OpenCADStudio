@@ -1618,6 +1618,64 @@ mod tests {
     }
 
     #[test]
+    fn leader_annotation_index_survives_plain_block_or_line_edits() {
+        use codec::entities::{Insert, Leader, Line};
+        use codec::types::Vector3;
+
+        let mut scene = Scene::new();
+        let annotation = scene.add_entity(EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+        )));
+        let mut leader = Leader::new();
+        leader.annotation_handle = annotation;
+        let leader_handle = scene.add_entity(EntityType::Leader(leader));
+
+        scene.select_entities(&[annotation]);
+        assert!(scene.selected.contains(&leader_handle));
+        let indexed_epoch = scene.leaders_by_annotation_cache.borrow().as_ref().unwrap().0;
+        scene.deselect_all();
+
+        scene.define_block_raw(
+            "PALM_TEST",
+            Vector3::new(0.0, 0.0, 0.0),
+            vec![EntityType::Line(Line::from_points(
+                Vector3::ZERO,
+                Vector3::new(2.0, 0.0, 0.0),
+            ))],
+        );
+        scene.add_entity(EntityType::Insert(Insert::new(
+            "PALM_TEST".to_string(),
+            Vector3::new(10.0, 0.0, 0.0),
+        )));
+
+        // Creating an ordinary INSERT must not invalidate the LEADER index.
+        assert!(scene.category_cache_valid(
+            indexed_epoch,
+            CACHE_CATEGORY_LEADER,
+            |h| matches!(scene.document.get_entity(h), Some(EntityType::Leader(_))),
+        ));
+        scene.select_entities(&[annotation]);
+        assert!(scene.selected.contains(&leader_handle));
+        assert_eq!(
+            scene.leaders_by_annotation_cache.borrow().as_ref().unwrap().0,
+            scene.geometry_epoch,
+        );
+
+        // Removing a LEADER must invalidate the old annotation link.
+        let epoch = scene.geometry_epoch;
+        scene.erase_entities(&[leader_handle]);
+        assert!(!scene.category_cache_valid(
+            epoch,
+            CACHE_CATEGORY_LEADER,
+            |h| matches!(scene.document.get_entity(h), Some(EntityType::Leader(_))),
+        ));
+        scene.deselect_all();
+        scene.select_entities(&[annotation]);
+        assert!(!scene.selected.contains(&leader_handle));
+    }
+
+    #[test]
     fn selection_fingerprint_tracks_final_set_only() {
         let mut scene = Scene::default();
         let first = Handle::new(1);
