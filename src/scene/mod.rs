@@ -935,6 +935,7 @@ const CACHE_CATEGORY_MESH: u16 = 1 << 4;
 const CACHE_CATEGORY_INTERACTION: u16 = 1 << 5;
 const CACHE_CATEGORY_TEXT: u16 = 1 << 6;
 const CACHE_CATEGORY_INSERT_HATCH: u16 = 1 << 7;
+const CACHE_CATEGORY_LEADER: u16 = 1 << 8;
 
 /// Mutable assembly metadata for one resident wire set. Keeping entity ranges
 /// beside the flat render Vec lets a one-entity edit splice that run directly;
@@ -3572,6 +3573,9 @@ impl Scene {
         }
         if self.entity_affects_text_cache(entity) {
             bits |= CACHE_CATEGORY_TEXT;
+        }
+        if matches!(entity, EntityType::Leader(_)) {
+            bits |= CACHE_CATEGORY_LEADER;
         }
         self.pending_removed_categories
             .borrow_mut()
