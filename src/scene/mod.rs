@@ -16242,6 +16242,82 @@ pub(crate) fn is_locked_point_cloud(entity: &EntityType) -> bool {
 }
 
 #[cfg(test)]
+mod interaction_motion_index_tests {
+    use super::Scene;
+    use crate::scene::pick::interaction_index::InteractionIndex;
+    use codec::entities::{Insert, Line};
+    use codec::types::Vector3;
+    use codec::EntityType;
+    use std::sync::Arc;
+
+    /// Repeated PASTECLIP invalidates an index while the pointer is moving.
+    /// Do not expand the whole scene on each move; clicks remain exact.
+    #[test]
+    fn pasted_blocks_do_not_trigger_full_scene_snap_scan_on_motion() {
+        let mut scene = Scene::new();
+        let mut prototype = Vec::new();
+        for n in 0..32 {
+            prototype.push(EntityType::Line(Line::from_points(
+                Vector3::new(n as f64, 0.0, 0.0),
+                Vector3::new(n as f64, 10.0, 0.0),
+            )));
+        }
+        scene.define_block_raw("HUMAN_TEST", Vector3::new(0.0, 0.0, 0.0), prototype);
+        for n in 0..3 {
+            scene.add_entity(EntityType::Insert(Insert::new(
+                "HUMAN_TEST".into(),
+                Vector3::new(n as f64 * 40.0, 0.0, 0.0),
+            )));
+        }
+        // Enough geometry to make an index mandatory, far from the cursor.
+        for n in 0..4_000 {
+            scene.add_entity(EntityType::Line(Line::from_points(
+                Vector3::new(10_000.0 + n as f64 * 10.0, 0.0, 0.0),
+                Vector3::new(10_000.0 + n as f64 * 10.0, 1.0, 0.0),
+            )));
+        }
+
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
+        let (view, eye) = {
+            let camera = scene.camera.borrow();
+            (camera.view_proj_rte(bounds), camera.eye())
+        };
+        let wires = scene.hit_test_wires();
+        assert!(wires.len() >= 4_000);
+        let cursor = glam::DVec3::ZERO;
+
+        let motion = scene.interaction_motion_candidates_near(
+            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+        );
+        assert!(motion.is_indexed(), "motion without a ready index must defer");
+        assert_eq!(motion.len(), 0, "no full-scene scan on the UI thread");
+
+        let click = scene.interaction_candidates_near(
+            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+        );
+        assert!(click.len() >= 4_000, "clicks must retain the exact fallback");
+
+        let (epoch, source) = scene.interaction_index_build_key(&wires, bounds.height)
+            .expect("edited resident model should request an index");
+        scene.mark_interaction_index_pending(epoch, source);
+        let index = Arc::new(InteractionIndex::build(&wires));
+        assert!(scene.install_prepared_interaction_index(
+            epoch, source, Arc::downgrade(&wires), index,
+        ));
+        let indexed_motion = scene.interaction_motion_candidates_near(
+            Arc::clone(&wires), cursor, view, eye, bounds, 25.0,
+        );
+        assert!(indexed_motion.is_indexed());
+        assert!(indexed_motion.len() < 4_000, "ready index limits the cursor query");
+    }
+}
+
+#[cfg(test)]
 mod world_box_handle_tests {
     use super::Scene;
     use codec::entities::{Insert, Line};
