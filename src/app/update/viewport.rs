@@ -4021,7 +4021,25 @@ impl OpenCADStudio {
             };
             crate::perf_record!("[perf] pointer-move mode={mode:<7} {:>7.1}ms", move_ms,);
         }
-        command_interaction_index_task.unwrap_or_else(Task::none)
+        // On large drawings, build the resident spatial index on the first
+        // idle cursor movement, not only after a stationary hover dwell.
+        // This lets a user draw a selection box without paying the full
+        // 100k-wire fallback when releasing the mouse. Keep the expensive
+        // index construction in the existing background task; preserve all
+        // original click/box hit-testing semantics.
+        let idle_interaction_index_task = if self.tabs[i].active_cmd.is_none()
+            && self.tabs[i].scene.current_layout == "Model"
+            && !navigating
+            && !self.tabs[i].scene.selection.borrow().input.left_down
+        {
+            let wires = self.tabs[i].scene.hit_test_wires();
+            self.prepare_interaction_index_task(i, wires, vp_size.1)
+        } else {
+            None
+        };
+        command_interaction_index_task
+            .or(idle_interaction_index_task)
+            .unwrap_or_else(Task::none)
     }
 
     /// Whether a middle-button drag orbits rather than pans, by the
