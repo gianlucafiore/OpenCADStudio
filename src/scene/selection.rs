@@ -58,6 +58,7 @@ impl Scene {
                 });
             }
         }
+        let started = crate::perf::enabled().then(iced::time::Instant::now);
         let mut by_annotation: HashMap<Handle, Vec<Handle>> = HashMap::default();
         for entity in self.document.entities() {
             if let EntityType::Leader(leader) = entity {
@@ -67,6 +68,15 @@ impl Scene {
                         .or_default()
                         .push(entity.common().handle);
                 }
+            }
+        }
+        if let Some(started) = started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] leader-annotation-index rebuild={elapsed_ms:.1}ms annotated_handles={}",
+                    by_annotation.len(),
+                );
             }
         }
         *self.leaders_by_annotation_cache.borrow_mut() = Some((self.geometry_epoch, by_annotation));
