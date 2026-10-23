@@ -283,20 +283,38 @@ impl OpenCADStudio {
             self.command_line
                 .push_error(crate::t!("Clipboard is empty.").as_ref());
         } else {
+            let perf_start = crate::perf::enabled().then(std::time::Instant::now);
             let delta = base_pt - self.clipboard_base;
             let translate = crate::command::EntityTransform::Translate(delta);
             self.push_undo_snapshot(i, "PASTECLIP");
+            let undo_ms = perf_start.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1e3);
             let count = self.clipboard.len();
+            let kernel_started = std::time::Instant::now();
             let by_index = self.finalize_paste(i, Some(translate));
-            self.tabs[i].scene.deselect_all();
-            for h in by_index.iter().copied().filter(|h| !h.is_null()) {
-                self.tabs[i].scene.select_entity(h, false);
-            }
+            let kernel_ms = kernel_started.elapsed().as_secs_f64() * 1e3;
+            // Keep all pasted handles selected while triggering only ONE
+            // highlight invalidation, not one for every new plant INSERT.
+            let new_handles: Vec<_> = by_index
+                .iter().copied().filter(|h| !h.is_null()).collect();
+            let select_started = std::time::Instant::now();
+            self.tabs[i].scene.select_entities_exclusive(&new_handles);
+            let select_ms = select_started.elapsed().as_secs_f64() * 1e3;
             self.tabs[i].dirty = true;
             // Surface any layers the paste brought in (cross-drawing)
             // in the layer manager and the layer dropdown.
+            let panel_started = std::time::Instant::now();
             self.refresh_layer_panel();
+            let panel_ms = panel_started.elapsed().as_secs_f64() * 1e3;
+            let props_started = std::time::Instant::now();
             self.refresh_properties();
+            let props_ms = props_started.elapsed().as_secs_f64() * 1e3;
+            if let Some(start) = perf_start {
+                let total_ms = start.elapsed().as_secs_f64() * 1e3;
+                crate::perf_record!(
+                    "[perf] paste-commit total={total_ms:.1}ms clipboard={} added={} snapshot={undo_ms:.1}ms kernel={kernel_ms:.1}ms selection={select_ms:.1}ms layers={panel_ms:.1}ms properties={props_ms:.1}ms",
+                    count, new_handles.len(),
+                );
+            }
             self.command_line
                 .push_info(crate::tf!("{count} object(s) pasted.").as_ref());
         }
@@ -377,6 +395,11 @@ impl OpenCADStudio {
             }
             None => PasteSpace::Model,
         };
+        // Clipboard dependencies normally include definitions already in
+        // this very drawing. Their presence must NOT trigger a full-scene
+        // retessellation on every Ctrl+V. Only actual new block records
+        // (including newly baked dimension *D blocks) need that rebuild.
+        let block_records_before = self.tabs[i].scene.document.block_records.len();
         let (by_index, handle_map) = paste_entities_kernel(
             &mut self.tabs[i].scene.document,
             &clipboard,
@@ -389,7 +412,16 @@ impl OpenCADStudio {
         // instead of once per entity. Block-definition merges (and pasted
         // Block/BlockEnd sentinels) need the full geometry rebuild, matching
         // the `bump_geometry` tails the Scene helpers used to run.
-        let mut needs_geometry_bump = !deps.blocks.is_empty();
+        let mut needs_geometry_bump =
+            self.tabs[i].scene.document.block_records.len() != block_records_before;
+        if crate::perf::enabled() && !deps.blocks.is_empty() {
+            crate::perf_record!(
+                "[perf] paste-block-definitions clipboard_defs={} records_before={} records_after={} full_rebuild={}",
+                deps.blocks.len(), block_records_before,
+                self.tabs[i].scene.document.block_records.len(),
+                needs_geometry_bump,
+            );
+        }
         let mut changes = Vec::new();
         for &handle in &by_index {
             if handle.is_null() {
@@ -591,6 +623,14 @@ pub(crate) fn merge_block_defs(
 ) -> usize {
     let mut created = Vec::new();
     for def in blocks {
+        // Same-document PASTECLIP often carries hundreds of large vegetation
+        // block definitions, all already present. define_block_raw_doc is a
+        // no-op in that case: avoid first cloning every child entity just
+        // to discard the clone. Genuine cross-drawing imports still run
+        // the identical definition/graph creation code below.
+        if doc.block_records.get(&def.name).is_some() {
+            continue;
+        }
         let before = doc.block_records.len();
         let mut entities = def.entities.clone();
         for entity in &mut entities {
@@ -1298,6 +1338,36 @@ mod clipboard_xdict_clone_tests {
             }
             other => panic!("expected Dictionary, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_existing_block_definition_tests {
+    use super::*;
+
+    #[test]
+    fn reusing_clipboard_block_does_not_create_or_replace_its_definition() {
+        let mut document = codec::CadDocument::new();
+        let def = crate::app::BlockDef {
+            name: "TEST_PALM_BLOCK".into(),
+            base_point: codec::types::Vector3::ZERO,
+            entities: vec![codec::EntityType::Line(
+                codec::entities::Line::new(),
+            )],
+            source: codec::Handle::new(911),
+            graph: None,
+        };
+        let apps = rustc_hash::FxHashMap::default();
+        assert_eq!(merge_block_defs(&mut document, &[def.clone()], &apps), 1);
+        let before = document.block_records.len();
+        let record_before = document.block_records.get(&def.name).unwrap().entity_handles.clone();
+        assert_eq!(merge_block_defs(&mut document, &[def], &apps), 0);
+        assert_eq!(document.block_records.len(), before);
+        assert_eq!(
+            document.block_records.get("TEST_PALM_BLOCK").unwrap().entity_handles,
+            record_before,
+            "existing source definition must remain identical on same-document paste",
+        );
     }
 }
 
