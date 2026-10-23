@@ -136,6 +136,9 @@ pub struct ViewportData {
     /// the main `wires` buffer so a drag re-uploads only this small set each
     /// frame, never the resident base buffer. Drawn on top in the wire pass.
     pub(in crate::scene) preview_wires: Arc<Vec<WireModel>>,
+    /// One reusable RGBA snapshot of a massive command selection. Transformed
+    /// as a textured quad, outside the cached resident scene.
+    pub(in crate::scene) raster_preview_image: Option<Arc<ImageModel>>,
     /// Non-current scale representations of selected or hovered annotative
     /// entities. Uploaded with the xray highlight instead of the resident set.
     pub(in crate::scene) annotation_context_wires: Arc<Vec<WireModel>>,
@@ -456,6 +459,11 @@ impl shader::Primitive for Primitive {
             // drawing size. The ViewCube is excluded from the signature and
             // keeps updating in its own always-on pass, so cube hover still
             // tracks while the scene is cached.
+            // The selected-object raster is immutable throughout a command:
+            // upload it once, then rewrite only its four-corner quad on moves.
+            // This happens even on scene-cache hits, never invalidating the
+            // resident geometry buffers.
+            inner.update_raster_preview(device, queue, vp.raster_preview_image.as_deref());
             // Upload simple wire previews before checking the base-scene cache.
             // Their dedicated overlay pass can then follow a cached resolve
             // without making the resident geometry dirty on every cursor move.
@@ -493,9 +501,14 @@ impl shader::Primitive for Primitive {
                         || inner
                             .gpu_preview_block_wires
                             .iter()
-                            .any(|wire| wire.instance_count > 0));
+                            .any(|wire| wire.instance_count > 0)
+                        || !inner.raster_preview_gpu.is_empty());
             } else {
-                inner.preview_overlay_direct = false;
+                inner.preview_overlay_direct = placement.surface_matches_raster()
+                    && vp.preview_hatches.is_empty()
+                    && vp.preview_text_verts.is_empty()
+                    && vp.clip_boundary_ndc.is_empty()
+                    && !inner.raster_preview_gpu.is_empty();
             }
             let sig = render_signature(vp, &placement, inner.preview_overlay_direct);
             // REDRAW bypass: pin render_sig to force a full pass this frame
@@ -5160,6 +5173,11 @@ impl Scene {
             wires: Arc::downgrade(&all_wires),
             clip_boundary_ndc,
             preview_wires,
+            raster_preview_image: if show_live_overlay {
+                self.raster_preview_image.clone()
+            } else {
+                None
+            },
             annotation_context_wires,
             preview_hatches,
             face3d_wires,
