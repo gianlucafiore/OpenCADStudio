@@ -20,6 +20,29 @@ fn bounds_valid(b: [f64; 4]) -> bool {
         && b[2] > b[0] && b[3] > b[1]
 }
 
+/// Use underlying nested geometry complexity, not merely the number of
+/// selected INSERT handles. This predicate is intentionally cheap and is
+/// shared with the command-preview LOD so the bitmap can actually be shown.
+pub fn should_rasterize_selection(wires: &[WireModel], selected: usize) -> bool {
+    fn substantial_geometry(wires: &[WireModel], budget: &mut usize, depth: usize) -> bool {
+        if depth > 12 { return false; }
+        for wire in wires {
+            if !wire.display_visible || wire.snap_only { continue; }
+            *budget = budget.saturating_sub(wire.points.len().saturating_sub(1));
+            if *budget == 0 { return true; }
+            if let Some(stub) = &wire.stub {
+                if substantial_geometry(&stub.prototype, budget, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    if selected > 512 && wires.len() >= 2048 { return true; }
+    let mut budget = 8192;
+    substantial_geometry(wires, &mut budget, 0)
+}
+
 /// Draw only selected wire geometry into a transparent CPU RGBA snapshot.
 /// The image is capped at 1536 pixels on its long side (~9 MiB), avoiding
 /// CPU↔GPU readback or a full-scene screen grab (which would capture neighbors).
@@ -30,27 +53,7 @@ pub fn rasterize_selection(wires: &[WireModel], selected: usize) -> Option<Raste
     if std::env::var_os("OCS_DISABLE_SELECTION_RASTER").is_some() {
         return None;
     }
-    // A single INSERT can contain tens of thousands of segments inside a
-    // nested instance stub. Count a bounded amount of underlying geometry
-    // rather than relying exclusively on the number of selected INSERTs.
-    fn substantial_geometry(wires: &[WireModel], budget: &mut usize, depth: usize) -> bool {
-        if depth > 12 { return false; }
-        for wire in wires {
-            if !wire.display_visible || wire.snap_only { continue; }
-            let segments = wire.points.len().saturating_sub(1);
-            *budget = budget.saturating_sub(segments);
-            if *budget == 0 { return true; }
-            if let Some(stub) = &wire.stub {
-                if substantial_geometry(&stub.prototype, budget, depth + 1) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-    let legacy_heavy = selected > 512 && wires.len() >= 2048;
-    let mut remaining = 8192;
-    if !legacy_heavy && !substantial_geometry(wires, &mut remaining, 0) {
+    if !should_rasterize_selection(wires, selected) {
         return None;
     }
     // Do not impose the old 2048 top-level wire minimum after the complexity
