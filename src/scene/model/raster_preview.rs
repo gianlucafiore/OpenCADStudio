@@ -27,12 +27,35 @@ pub fn rasterize_selection(wires: &[WireModel], selected: usize) -> Option<Raste
     // A safe comparison/fallback switch for real-DWG benchmarking:
     // OCS_DISABLE_SELECTION_RASTER=1 cargo run --release
     // retains the proven single-box LOD when image capture is expensive.
-    if std::env::var_os("OCS_DISABLE_SELECTION_RASTER").is_some()
-        || selected <= 512 || wires.len() < 2048
-    {
+    if std::env::var_os("OCS_DISABLE_SELECTION_RASTER").is_some() {
         return None;
     }
-    let outlines = super::instance_model::mass_transform_group_preview(wires, 2048)?;
+    // A single INSERT can contain tens of thousands of segments inside a
+    // nested instance stub. Count a bounded amount of underlying geometry
+    // rather than relying exclusively on the number of selected INSERTs.
+    fn substantial_geometry(wires: &[WireModel], budget: &mut usize, depth: usize) -> bool {
+        if depth > 12 { return false; }
+        for wire in wires {
+            if !wire.display_visible || wire.snap_only { continue; }
+            let segments = wire.points.len().saturating_sub(1);
+            *budget = budget.saturating_sub(segments);
+            if *budget == 0 { return true; }
+            if let Some(stub) = &wire.stub {
+                if substantial_geometry(&stub.prototype, budget, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let legacy_heavy = selected > 512 && wires.len() >= 2048;
+    let mut remaining = 8192;
+    if !legacy_heavy && !substantial_geometry(wires, &mut remaining, 0) {
+        return None;
+    }
+    // Do not impose the old 2048 top-level wire minimum after the complexity
+    // test: one massive nested block is a valid raster preview candidate.
+    let outlines = super::instance_model::mass_transform_group_preview(wires, 0)?;
     let extent = outlines.iter().find(|w| w.name == "__mass_transform_group_extent__")?;
     let b = extent.aabb.map(f64::from);
     if !bounds_valid(b) {
@@ -196,6 +219,23 @@ impl RasterSelectionPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn one_heavy_nested_insert_gets_a_raster_even_with_one_selected_handle() {
+        let mut points = Vec::new();
+        for i in 0..9000 {
+            points.push([i as f64 / 100.0, (i % 3) as f64, 0.0]);
+        }
+        let leaf = WireModel::solid_f64(
+            "heavy_palm".into(), points, WireModel::WHITE, false,
+        );
+        let proto = Arc::new(vec![leaf]);
+        let insert = super::super::instance_model::stub_wire(
+            proto, [0.0, 0.0, 90.0, 2.0], [0.0, 0.0, 0.0], 0.0,
+        );
+        let image = rasterize_selection(&[insert], 1);
+        assert!(image.is_some(), "one heavy nested block must not become a box");
+    }
+
     #[test]
     fn raster_is_transparent_off_geometry_and_builds_one_rgba_image() {
         let mut wires=Vec::new();
