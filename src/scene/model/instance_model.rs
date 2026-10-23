@@ -299,12 +299,13 @@ pub fn cached_command_preview_for_large_2d_selection(
 ) -> Vec<WireModel> {
     const MIN_SELECTED: usize = 512;
     const MIN_WIRES: usize = 2048;
-    let legacy_heavy = handles > MIN_SELECTED && wires.len() >= MIN_WIRES;
-    let raster_heavy = super::raster_preview::should_rasterize_selection(&wires, handles);
-    if !legacy_heavy && !raster_heavy {
+    // Do not replace a small selection with a bounding box merely because
+    // the nested prototype is complex. The raster capture is optional and
+    // may fail, so keep its real geometry as the guaranteed visual fallback.
+    if handles <= MIN_SELECTED || wires.len() < MIN_WIRES {
         return wires;
     }
-    if let Some(proxy) = mass_transform_group_preview(&wires, 0) {
+    if let Some(proxy) = mass_transform_group_preview(&wires, MIN_WIRES) {
         crate::perf_record!(
             "[perf] mass-command-preview-cache selected={} original_wires={} proxy_wires={}",
             handles, wires.len(), proxy.len()
