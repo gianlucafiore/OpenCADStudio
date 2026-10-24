@@ -1545,34 +1545,37 @@ fn block_instances(
     mesh_edge: bool,
     depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
 ) -> Vec<BlockWireInstance> {
-    group
-        .iter()
-        .filter_map(|block| {
-            let instance = block.wire.render_instance?;
-            let delta = [
-                instance.translation[0] + block.delta[0] - base.translation[0],
-                instance.translation[1] + block.delta[1] - base.translation[1],
-                instance.translation[2] + block.delta[2] - base.translation[2],
-            ];
-            let high = delta.map(|value| value as f32);
-            Some(BlockWireInstance {
-                translation: high,
-                translation_low: [
-                    (delta[0] - high[0] as f64) as f32,
-                    (delta[1] - high[1] as f64) as f32,
-                    (delta[2] - high[2] as f64) as f32,
-                ],
-                depth: [
-                    if mesh_edge {
-                        0.0
-                    } else {
-                        block.draw_depth(depth_map)
-                    },
-                    0.0,
-                ],
-            })
-        })
-        .collect()
+    // Most groups contain many placements of the same block definition.
+    // Reserve once instead of growing a 64-byte-per-instance vector repeatedly.
+    let mut instances = Vec::with_capacity(group.len());
+    for block in group {
+        let Some(instance) = block.wire.render_instance else {
+            continue;
+        };
+        let delta = [
+            instance.translation[0] + block.delta[0] - base.translation[0],
+            instance.translation[1] + block.delta[1] - base.translation[1],
+            instance.translation[2] + block.delta[2] - base.translation[2],
+        ];
+        let high = delta.map(|value| value as f32);
+        instances.push(BlockWireInstance {
+            translation: high,
+            translation_low: [
+                (delta[0] - high[0] as f64) as f32,
+                (delta[1] - high[1] as f64) as f32,
+                (delta[2] - high[2] as f64) as f32,
+            ],
+            depth: [
+                if mesh_edge {
+                    0.0
+                } else {
+                    block.draw_depth(depth_map)
+                },
+                0.0,
+            ],
+        });
+    }
+    instances
 }
 
 /// Upload one constant chunk; its instances use chunk-local wire IDs.
