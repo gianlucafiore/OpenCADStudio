@@ -54,6 +54,10 @@ impl MirrorCommand {
         text_ghosts: Vec<(WireModel, DVec3)>,
         mirror_text: bool,
     ) -> Self {
+        // Match MOVE/COPY/ROTATE/SCALE on huge selections. Keep the separate
+        // text ghosts exact so MIRRTEXT=0 continues to preserve glyph reading.
+        let wire_models = crate::scene::model::instance_model::
+            compact_mass_transform_preview(handles.len(), wire_models);
         Self {
             handles,
             wire_models,
