@@ -1230,6 +1230,9 @@ impl BlockWireGpu {
         // Records emitted this call, so a cache that is earning its keep is
         // visible rather than assumed.
         let mut emitted_segments = 0usize;
+        let perf_started = crate::perf::enabled().then(std::time::Instant::now);
+        let mut instance_build_ms = 0.0f64;
+        let mut instance_total = 0usize;
         for (mesh_edge, group) in groups {
             // A copy reached through a stub carries the prototype's
             // geometry at the prototype's placement, which is what `base`
@@ -1284,7 +1287,12 @@ impl BlockWireGpu {
                     built
                 }
             };
+            let instance_started = perf_started.map(|_| std::time::Instant::now());
             let instances = block_instances(&group, base, mesh_edge, depth_map);
+            if let Some(started) = instance_started {
+                instance_build_ms += started.elapsed().as_secs_f64() * 1000.0;
+                instance_total += instances.len();
+            }
             if instances.is_empty() {
                 continue;
             }
@@ -1294,7 +1302,18 @@ impl BlockWireGpu {
         if let Some(cache) = cache {
             cache.retain(|key, _| live_keys.contains(key));
         }
+        let upload_started = perf_started.map(|_| std::time::Instant::now());
         let out = arena.finish(device, queue, const_bgl);
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 8.0 {
+                crate::perf_record!(
+                    "[perf] block-wire-stages total={elapsed_ms:.1}ms instances={instance_total} instance_build={instance_build_ms:.1}ms upload={:.1}ms other={:.1}ms",
+                    upload_started.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0),
+                    elapsed_ms - instance_build_ms - upload_started.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0),
+                );
+            }
+        }
         if crate::perf::enabled() && arena.segments > 0 {
             crate::perf_record!(
                 "[perf] block-wire-geometry mode={} definitions={} arenas={} batches={} \
