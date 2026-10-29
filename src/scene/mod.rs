@@ -15084,10 +15084,9 @@ mod journal_tests {
             .expect("the standard drawing has another block record");
         let mut handles = Vec::with_capacity(4096);
         for n in 0..4096 {
-            let point = Vector3::new(n as f64, 0.0, 0.0);
             let handle = s.add_entity(EntityType::Line(Line::from_points(
-                point,
-                point + Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(n as f64, 0.0, 0.0),
+                Vector3::new(n as f64, 1.0, 0.0),
             )));
             // Imported DXFs can omit owner 330 even when BlockRecord owns
             // the entity explicitly via its entity_handles collection.
