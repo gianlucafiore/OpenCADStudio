@@ -939,6 +939,28 @@ impl OpenCADStudio {
     /// cursor exactly where the GPU draws it; otherwise the model/paper camera
     /// and the normal hit-test wires. `bounds` is the pane-local rectangle.
 
+    /// Visual-only rollover must not turn a large crossing-window drag into a
+    /// synchronous full hit-test of every hovered object on every pointer move.
+    /// The release path still performs the exact, unbounded box selection.
+    ///
+    /// Check top-level handles first (no wire generation), then the resident
+    /// hit-test wire count. Blocks with few top-level INSERTs but expensive
+    /// definitions can also exhaust the latter budget.
+    fn box_selection_preview_within_budget(&self, i: usize) -> bool {
+        let scene = &self.tabs[i].scene;
+        let interaction_block = scene.interaction_block_handle();
+        let entity_count = scene
+            .document
+            .block_records
+            .iter()
+            .find(|record| record.handle == interaction_block)
+            .map_or(0, |record| record.entity_handles.len());
+        if entity_count > 4_096 {
+            return false;
+        }
+        scene.hit_test_wires().len() <= 12_000
+    }
+
     /// SELECTIONPREVIEW while a selection box is drawn (#2172): what the box
     /// would catch with its corner at `p` (canvas pixels) rolls over before
     /// the release commits it, with the release's filters.
@@ -964,6 +986,13 @@ impl OpenCADStudio {
             self.tabs[i].scene.set_box_hover_highlights(&[]);
             return;
         };
+        // Large drawings keep the window/crossing rectangle responsive.
+        // Computing a visual rollover here is optional; the actual selection
+        // still runs in box_selection_handles on release.
+        if !self.box_selection_preview_within_budget(i) {
+            self.tabs[i].scene.set_box_hover_highlights(&[]);
+            return;
+        }
         let canvas_sz = self.tabs[i].scene.selection.borrow().view.vp_size;
         let edit_frame = self.tabs[i].scene.viewport_edit_frame(canvas_sz);
         let tile = match &edit_frame {
@@ -9967,6 +9996,30 @@ mod snap_elevation_tests {
 mod selection_preview_tests {
     use super::*;
     use crate::app::{HoverDwell, OpenCADStudio, HOVER_DWELL_MS};
+
+    #[test]
+    fn large_model_skips_only_live_box_rollover() {
+        use codec::{
+            entities::Line,
+            types::Vector3,
+            EntityType,
+        };
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        // In this case the top-level entity count alone exceeds the budget;
+        // there is no need to tessellate geometry for a hover preview.
+        for n in 0..4_097 {
+            let x = n as f64;
+            app.tabs[i].scene.add_entity(EntityType::Line(Line::from_points(
+                Vector3::new(x, 0.0, 0.0),
+                Vector3::new(x, 10.0, 0.0),
+            )));
+        }
+        assert!(!app.box_selection_preview_within_budget(i));
+        assert!(app.tabs[i].scene.selected.is_empty());
+    }
 
     #[test]
     fn lower_endpoint_drag_previews_connected_tangent_profile_and_keeps_top_fixed() {
