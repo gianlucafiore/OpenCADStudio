@@ -1337,7 +1337,7 @@ impl BlockWireGpu {
         if crate::perf::enabled() && arena.segments > 0 {
             crate::perf_record!(
                 "[perf] block-wire-geometry mode={} definitions={} arenas={} batches={} \
-segments={} bytes={} bytes_if_per_definition={} emitted={}",
+segments={} bytes={} bytes_if_per_definition={} emitted={} requested_placements={} uploaded_placements={}",
                 if mode.uses_storage() {
                     "storage"
                 } else {
@@ -1350,6 +1350,8 @@ segments={} bytes={} bytes_if_per_definition={} emitted={}",
                 arena.bytes,
                 BlockArenaBuilder::per_definition_bytes(out.len()),
                 emitted_segments,
+                arena.requested_placements,
+                arena.uploaded_placements,
             );
         }
         out
@@ -1372,6 +1374,8 @@ struct BlockArenaBuilder {
     arenas: usize,
     segments: usize,
     bytes: u64,
+    requested_placements: usize,
+    uploaded_placements: usize,
 }
 
 #[derive(Default)]
@@ -1440,6 +1444,8 @@ impl BlockArenaBuilder {
             arenas: 0,
             segments: 0,
             bytes: 0,
+            requested_placements: 0,
+            uploaded_placements: 0,
         }
     }
 
@@ -1480,12 +1486,14 @@ impl BlockArenaBuilder {
                 let mut constant = geometry.constant;
                 constant.draw_depth = depth_offset;
                 chunk.consts.push(constant);
+                self.requested_placements += run.len();
                 let first_instance = if let Some(existing) =
                     chunk.reused_instance_start(run, run_hash)
                 {
                     existing as u32
                 } else {
                     let start = chunk.instances.len();
+                    self.uploaded_placements += run.len();
                     chunk.instances.extend_from_slice(run);
                     chunk
                         .instance_runs
@@ -2103,6 +2111,45 @@ mod block_wire_storage_tests {
 
     /// The two shaders must stay interchangeable: same entry points, same
     /// fragment behaviour. Only the geometry source differs.
+    /// Independently coloured segments of the same block must share exact
+    /// placements, while visually different placements must not alias.
+    #[test]
+    fn repeated_block_placements_reuse_one_instance_stream() {
+        use super::{
+            instance_run_hash, BlockArenaChunk, BlockWireInstance,
+        };
+        let run = vec![
+            BlockWireInstance {
+                translation: [1.0, 2.0, 3.0],
+                translation_low: [0.0; 3],
+                depth: [0.25, 0.1],
+            },
+            BlockWireInstance {
+                translation: [4.0, 5.0, 6.0],
+                translation_low: [0.0; 3],
+                depth: [0.5, 0.1],
+            },
+        ];
+        let mut chunk = BlockArenaChunk::default();
+        chunk.instances.extend_from_slice(&run);
+        let hash = instance_run_hash(&run);
+        chunk.instance_runs.entry(hash).or_default().push((0, run.len()));
+        assert_eq!(chunk.reused_instance_start(&run, hash), Some(0));
+
+        let mut different = run.clone();
+        different[0].depth[0] = 0.75;
+        assert_eq!(
+            chunk.reused_instance_start(&different, instance_run_hash(&different)),
+            None,
+        );
+        different = run.clone();
+        different[1].translation[0] = 7.0;
+        assert_eq!(
+            chunk.reused_instance_start(&different, instance_run_hash(&different)),
+            None,
+        );
+    }
+
     #[test]
     fn both_block_wire_shaders_expose_the_same_entry_points() {
         let packed = module(draw_order_shader!("block_wire.wgsl"));
