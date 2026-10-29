@@ -9999,11 +9999,7 @@ mod selection_preview_tests {
 
     #[test]
     fn large_model_skips_only_live_box_rollover() {
-        use codec::{
-            entities::Line,
-            types::Vector3,
-            EntityType,
-        };
+        use codec::{entities::Line, types::Vector3, EntityType};
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
