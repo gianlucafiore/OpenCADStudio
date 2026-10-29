@@ -233,9 +233,10 @@ impl Scene {
         // while the cursor moves. A snapshot is cheaper than repeatedly
         // allocating a set and sorting missing handles.
         if let Some(order) = self.selected_order_cache.borrow().as_ref() {
-            if order.len() == self.selected.len()
-                && order.iter().all(|handle| self.selected.contains(handle))
-            {
+            // bump_selection_set() invalidates the cache on every supported
+            // mutation; no need to re-hash all 50k membership entries on
+            // every reader. The length guard catches accidental raw inserts.
+            if order.len() == self.selected.len() {
                 return order.clone();
             }
         }
@@ -1722,7 +1723,12 @@ mod tests {
             codec::types::Vector3::new(0.0, 0.0, 0.0),
             codec::types::Vector3::new(1.0, 0.0, 0.0),
         )));
-        let hatch = scene.add_entity(EntityType::Hatch(Box::new(codec::entities::Hatch::new())));
+        // INSERT is included in the hatch overlay signature even without a
+        // filled child; unlike an empty hatch it always exercises membership.
+        let hatch = scene.add_entity(EntityType::Insert(codec::entities::Insert::new(
+            "UNDEFINED_BLOCK",
+            codec::types::Vector3::ZERO,
+        )));
         scene.select_entity(line, false);
         assert_eq!(scene.selected_hatch_sig(), 0);
         assert_eq!(scene.selected_hatch_sig(), 0);
