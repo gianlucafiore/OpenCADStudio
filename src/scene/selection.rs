@@ -229,32 +229,41 @@ impl Scene {
     }
 
     pub(crate) fn selected_handles_in_order(&self) -> Vec<Handle> {
-        // In the normal case selected_order is already a unique, complete
-        // ordered index maintained by select/deselect/replace_selection.
-        // Avoid rebuilding a HashSet and sorting 50k handles each time a
-        // property panel, command, or dock queries the current selection.
-        // Keep the reconciliation fallback for external/script mutations.
-        if self.selected_order.len() == self.selected.len()
-            && self.selected_order.iter().all(|h| self.selected.contains(h))
-        {
-            return self.selected_order.clone();
+        // Most consumers ask for the exact same selection multiple times
+        // while the cursor moves. A snapshot is cheaper than repeatedly
+        // allocating a set and sorting missing handles.
+        if let Some(order) = self.selected_order_cache.borrow().as_ref() {
+            if order.len() == self.selected.len()
+                && order.iter().all(|handle| self.selected.contains(handle))
+            {
+                return order.clone();
+            }
         }
-
-        let mut seen = HashSet::default();
-        let mut ordered: Vec<_> = self
-            .selected_order
-            .iter()
-            .copied()
-            .filter(|handle| self.selected.contains(handle) && seen.insert(*handle))
-            .collect();
-        let mut missing: Vec<_> = self
-            .selected
-            .iter()
-            .copied()
-            .filter(|handle| seen.insert(*handle))
-            .collect();
-        missing.sort_unstable_by_key(|handle| handle.value());
-        ordered.extend(missing);
+        let ordered = if self.selected_order.len() == self.selected.len()
+            && self.selected_order.iter().all(|handle| self.selected.contains(handle))
+        {
+            self.selected_order.clone()
+        } else {
+            // Tolerate direct/external selection mutations by reconciling
+            // historical order with the actual membership once.
+            let mut seen = HashSet::default();
+            let mut ordered: Vec<_> = self
+                .selected_order
+                .iter()
+                .copied()
+                .filter(|handle| self.selected.contains(handle) && seen.insert(*handle))
+                .collect();
+            let mut missing: Vec<_> = self
+                .selected
+                .iter()
+                .copied()
+                .filter(|handle| seen.insert(*handle))
+                .collect();
+            missing.sort_unstable_by_key(|handle| handle.value());
+            ordered.extend(missing);
+            ordered
+        };
+        *self.selected_order_cache.borrow_mut() = Some(ordered.clone());
         ordered
     }
 
