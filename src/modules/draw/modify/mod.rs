@@ -52,7 +52,7 @@ pub(super) fn mass_array_preview_stride(wires: usize, copies: usize) -> usize {
     if total <= 8_192 || std::env::var_os("OCS_FULL_MASS_PREVIEW").is_some() {
         1
     } else {
-        total.div_ceil(2_048).max(1)
+        wires.div_ceil((2_048 / copies.max(1)).max(1)).max(1)
     }
 }
 
