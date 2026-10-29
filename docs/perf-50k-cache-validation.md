@@ -155,3 +155,43 @@ En el log nuevo se espera observar `wire-nav-lod active=true` durante la
 navegación y que `wire-highlight` y `wire-upload` dejen de tardar segundos
 en las mismas operaciones. Esas mejoras son hipótesis de rendimiento
 instrumentadas y todavía no medidas en la máquina del usuario.
+
+
+## 29/10 — pausas residuales luego de acciones (registro 18:32)
+
+El último ensayo confirma que el LOD interactivo sí funciona:
+`wire-nav-lod active=true ... stride=121`, y la mayor parte de PAN/ZOOM
+transcurre entre 6 y 25 ms. No obstante todavía aparecen esperas de
+430–440 ms y alguna de más de 900 ms cuando la GPU procesa fotogramas
+completos con 42 millones de segmentos lógicos.
+
+### Cambios adicionales
+
+- Rollover/highlight automático: cuando el modelo residente contiene más
+  de 200.000 wires se omite el **hover diferido**, que llegó a consultar
+  1.011.913 candidatos y bloquear la interfaz 734 ms. Es deliberadamente
+  distinto de click-select y OSNAP: esos caminos conservan su precisión.
+  Para comparar el hover original usar
+  `OCS_FULL_MASS_HOVER=1 PERF=1 ./target/release/OpenCADStudio`.
+- Transformación: `transform_annotation_contexts` ahora comprueba la
+  presencia de contextos antes de clonar la entidad.
+- Nuevo registro `mass-transform stages` separa coste de undo, selección
+  parcial, transformación, restricciones, refresco y confirmación de historial.
+
+### Límites pendientes
+
+El log anterior incluye `nav-prepare op=edit` con 10–13 s en commits de
+miles de INSERTs y `wire-highlight` de 2.826 ms para 54.433 objetos.
+El memo de posiciones GPU se optimizó en el commit precedente, pero aún no
+se midió su efecto sobre el resaltado completo en la máquina de prueba.
+Las pausas de 430 ms al restaurar **el dibujo completo** después de
+navegar no están eliminadas con el cambio de hover. Solución arquitectónica:
+culling espacial de instancias por viewport (reducir cantidad de INSERTs
+que efectivamente se envían a la GPU), y evitar otro pase completo de
+42 millones de segmentos para el xray de selección, **sin sacrificar
+precisión geométrica al acercarse**. No confundir una baja de lag del
+rollover con una solución de esos dos problemas.
+
+Repetir `cargo test --lib && cargo build --release` y revisar `hover-dwell`,
+`mass-transform stages`, `wire-highlight`, `wire-upload` e
+`input-to-render`. No se dispone de un build verificado en este entorno.
