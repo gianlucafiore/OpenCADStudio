@@ -181,6 +181,13 @@ impl CadCommand for MirrorCommand {
                 out.push(w.translated(delta));
             }
         }
+        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+            out.push(extent.mirrored_in_plane(
+                p1.as_vec3(),
+                p2.as_vec3(),
+                self.plane.z.as_vec3(),
+            ));
+        }
         // Mirror-axis line (rubber-band).
         out.push(WireModel::solid(
             "rubber_band".into(),
