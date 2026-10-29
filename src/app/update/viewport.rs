@@ -8154,6 +8154,10 @@ properties={:.1}ms picked={}",
     }
 
     pub(super) fn on_hover_dwell_tick(&mut self) -> Task<Message> {
+        fn mass_hover_suppressed(resident_wires: usize, force_full: bool) -> bool {
+            resident_wires > 200_000 && !force_full
+        }
+
         let Some(dwell) = self.hover_dwell.clone() else {
             return Task::none();
         };
@@ -8201,6 +8205,21 @@ properties={:.1}ms picked={}",
             height: dwell.tile_size.1,
         };
         let p = dwell.point;
+        // Rollover highlight is optional. In mass drawings an idle cursor
+        // may index >1,000,000 expanded wire candidates and block the UI
+        // for 500–750 ms after every zoom, pan, or box selection. Preserve
+        // exact click picking and OSNAP, but skip only this speculative
+        // background highlight when the resident scene is exceptionally
+        // large. OCS_FULL_MASS_HOVER=1 restores the old behaviour for tests.
+        if mass_hover_suppressed(
+            self.tabs[i].scene.last_tess_wires.get(),
+            std::env::var_os("OCS_FULL_MASS_HOVER").is_some(),
+        ) && !deferred_command
+        {
+            self.tabs[i].scene.set_hover_highlight(None);
+            self.hover_dwell = None;
+            return Task::none();
+        }
         // Inside a viewport, hover-pick through the viewport camera +
         // model wires so the rollover highlights the entity under the
         // cursor (dwell.point / dwell.tile_size are already pane-local).
