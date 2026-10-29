@@ -110,3 +110,48 @@ PERF=1 ./target/release/OpenCADStudio 2>&1 | tee ~/ocs-perf-cache-integral.log
 **Estado:** cambios subidos; sin compilación o pruebas de interfaz ejecutadas
 en el entorno de GitHub disponible desde esta sesión. La aceptación requiere
 los tests y la inspección visual anteriores.
+
+
+## 29/10: corrección del lag residual en Intel Vulkan
+
+Registro de referencia: 54.433 INSERT, 772 segmentos distintos, 42.021.504
+instancias potenciales y 23 MiB de buffers GPU. PAN y ZOOM todavía tenían
+esperas de ~430 ms aunque `frame-prepare` era <1 ms, porque el LOD de bloques
+se activaba a través de `skip_hatch` y ese flag solo estaba habilitado si
+`OCS_HATCH_LOD` estaba activo. El DWG no tenía hatches.
+
+Cambios implementados:
+
+- `navigation_lod` separado de `skip_hatch`; ahora se activa para Model
+  durante PAN/ZOOM incluso si el documento no tiene HATCH. Se conserva la
+  configuración original de supresión de rellenos.
+- Presupuesto transitorio para geometría de bloques: 350.000 segmentos
+  referenciados por frame. En el dibujo de referencia resulta en un stride de
+  121 de 772 batches. La GPU mantiene las posiciones/segmentos residentes y
+  recupera todas las geometrías al terminar de navegar.
+- `wire-nav-lod` registra `active`, `preview`, `segments` y `stride`.
+  Verificar que durante PAN/ZOOM **active=true** y stride>1; si no, el LOD
+  sigue sin entrar en la ruta de dibujo realmente usada.
+- El atlas de posiciones compartidas tiene ahora un id de memo por operación:
+  evita recalcular 42M hashes y comparaciones byte a byte al preparar el
+  resaltado seleccionado, así como al actualizar el dibujo después de editarlo.
+- Se evita la clasificación genérica de 327k wires si todos son instancias
+  de bloques.
+
+**Validación:** no asumir resolución sin probar `cargo test --lib`, compilar
+`--release`, comprobar FPS y revisar la restauración de geometría y resaltado
+tras dejar de panear, hacer zoom, MOVE, copiar, rotar, escalar, hacer MIRROR y
+guardar/reabrir el DWG.
+
+Pruebas específicas adicionales:
+
+```bash
+cargo test --lib hatch_free_42m_segment_drawing_uses_navigation_budget -- --nocapture
+cargo test --lib memoized_block_runs_alias_only_with_the_same_memo_and_chunk -- --nocapture
+cargo test --lib repeated_block_placements_reuse_one_instance_stream -- --nocapture
+```
+
+En el log nuevo se espera observar `wire-nav-lod active=true` durante la
+navegación y que `wire-highlight` y `wire-upload` dejen de tardar segundos
+en las mismas operaciones. Esas mejoras son hipótesis de rendimiento
+instrumentadas y todavía no medidas en la máquina del usuario.
