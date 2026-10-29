@@ -2233,6 +2233,25 @@ mod block_wire_storage_tests {
     }
 
     #[test]
+    fn memoized_block_runs_alias_only_with_the_same_memo_and_chunk() {
+        use super::{BlockArenaChunk, BlockWireInstance};
+
+        let placement = BlockWireInstance {
+            translation: [1.0, 2.0, 3.0],
+            translation_low: [0.0; 3],
+            depth: [0.25, 0.1],
+        };
+        let mut chunk = BlockArenaChunk::default();
+        chunk.instances.extend([placement; 2]);
+        // (memo id, split-run index) identifies one exact CPU placement
+        // stream; another memo must not silently alias its GPU range.
+        chunk.memo_runs.insert((0, 0), (0, 2));
+        assert_eq!(chunk.memo_runs.get(&(0, 0)).copied(), Some((0, 2)));
+        assert_eq!(chunk.memo_runs.get(&(1, 0)).copied(), None);
+        assert_eq!(chunk.memo_runs.get(&(0, 1)).copied(), None);
+    }
+
+    #[test]
     fn repeated_block_placements_reuse_one_instance_stream() {
         use super::{instance_run_hash, BlockArenaChunk, BlockWireInstance};
         let run = vec![
