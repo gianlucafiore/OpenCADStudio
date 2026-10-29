@@ -7,6 +7,7 @@ impl OpenCADStudio {
         transform: crate::command::EntityTransform,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
+        let perf_transform = crate::perf::enabled().then(std::time::Instant::now);
         handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
         if handles.is_empty() {
             self.tabs[i].active_cmd = None;
@@ -19,24 +20,49 @@ impl OpenCADStudio {
                 .parametric_connected_handles(scope, &handles, false);
             handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
         }
+        let stage_start = std::time::Instant::now();
+        let before_undo_ms = perf_transform
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0);
         let label = self.history_label_from_active_cmd(i, "MOVE");
         // A translation carries its complete connected constraint
         // component so each member keeps its own dimensions. Other
         // transforms retain their selected-object behavior.
         let pending = self.begin_undo(i, label, handles.len(), true);
+        let undo_ms = stage_start.elapsed().as_secs_f64() * 1000.0;
+        let t_segments = std::time::Instant::now();
         let handles = self.tabs[i]
             .scene
             .transform_picked_segments(&handles, &transform);
+        let segments_ms = t_segments.elapsed().as_secs_f64() * 1000.0;
+        let t_transform = std::time::Instant::now();
         self.tabs[i].scene.transform_entities(&handles, &transform);
+        let transform_ms = t_transform.elapsed().as_secs_f64() * 1000.0;
+        let t_constraints = std::time::Instant::now();
         self.apply_inferred_constraints(i, &handles);
+        let constraints_ms = t_constraints.elapsed().as_secs_f64() * 1000.0;
         self.tabs[i].dirty = true;
         self.tabs[i].scene.clear_preview_wire();
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.restore_pre_cmd_tangent();
         self.refresh_properties();
+        let t_commit = std::time::Instant::now();
         if let Some(p) = pending {
             self.commit_undo_delta(i, p);
+        }
+        if let Some(start) = perf_transform {
+            crate::perf_record!(
+                "[perf] mass-transform stages handles={} pre_undo={:.1}ms undo={:.1}ms picked={:.1}ms entity={:.1}ms constraints={:.1}ms refresh={:.1}ms commit={:.1}ms total={:.1}ms",
+                handles.len(),
+                before_undo_ms.unwrap_or(0.0),
+                undo_ms,
+                segments_ms,
+                transform_ms,
+                constraints_ms,
+                t_constraints.elapsed().as_secs_f64() * 1000.0 - constraints_ms,
+                t_commit.elapsed().as_secs_f64() * 1000.0,
+                start.elapsed().as_secs_f64() * 1000.0,
+            );
         }
         None
     }
