@@ -377,6 +377,7 @@ impl CadCommand for RotateCommand {
         let mut previews: Vec<_> = self
             .wire_models
             .iter()
+            .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| {
                 w.rotated_about_axis(center.as_vec3(), self.plane.z.as_vec3(), angle_rad as f32)
             })
