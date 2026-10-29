@@ -46,6 +46,52 @@ pub(super) fn mass_preview_stride(wires: usize) -> usize {
     }
 }
 
+/// The sampled ghost still needs to communicate the full selected extent.
+/// A cheap 2D outline preserves that spatial reference while every geometry
+/// edit remains exact on commit. This is not a raster or a replacement object.
+pub(super) fn mass_preview_extent(
+    wires: &[crate::scene::model::wire_model::WireModel],
+) -> Option<crate::scene::model::wire_model::WireModel> {
+    if mass_preview_stride(wires.len()) == 1 {
+        return None;
+    }
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for wire in wires {
+        let bb = wire.aabb;
+        if !bb.iter().all(|v| v.is_finite())
+            || bb[0] > bb[2]
+            || bb[1] > bb[3]
+        {
+            continue;
+        }
+        bounds[0] = bounds[0].min(f64::from(bb[0]));
+        bounds[1] = bounds[1].min(f64::from(bb[1]));
+        bounds[2] = bounds[2].max(f64::from(bb[2]));
+        bounds[3] = bounds[3].max(f64::from(bb[3]));
+    }
+    if !bounds.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let [x0, y0, x1, y1] = bounds;
+    Some(crate::scene::model::wire_model::WireModel::solid_f64(
+        "__mass_preview_outline__".into(),
+        vec![
+            [x0, y0, 0.0],
+            [x1, y0, 0.0],
+            [x1, y1, 0.0],
+            [x0, y1, 0.0],
+            [x0, y0, 0.0],
+        ],
+        crate::scene::model::wire_model::WireModel::CYAN,
+        false,
+    ))
+}
+
 /// ARRAY can multiply one selection into thousands of preview copies.
 pub(super) fn mass_array_preview_stride(wires: usize, copies: usize) -> usize {
     let total = wires.saturating_mul(copies);
