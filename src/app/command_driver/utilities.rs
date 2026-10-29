@@ -1244,9 +1244,7 @@ impl OpenCADStudio {
             return Some(Task::none());
         }
         self.last_pick = Some((add.clone(), false));
-        for h in add {
-            self.tabs[i].scene.select_entity(h, false);
-        }
+        self.tabs[i].scene.select_entities(&add);
         self.refresh_properties();
         let handles: Vec<Handle> = self.tabs[i]
             .scene
