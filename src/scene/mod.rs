@@ -2495,6 +2495,12 @@ pub struct Scene {
     /// segment indices.
     pub sub_segments: HashMap<Handle, std::collections::BTreeSet<usize>>,
     selected_order: Vec<Handle>,
+    /// Compact snapshot of the ordered selection; cleared only when the
+    /// selection set changes, not for hover/cursor redraws.
+    selected_order_cache: RefCell<Option<Vec<Handle>>>,
+    /// Selection's hatch/INSERT signature, valid at the recorded geometry
+    /// epoch. Avoids scanning 50k selected lines on every render frame.
+    selected_hatch_signature_cache: std::cell::Cell<Option<(u64, u64)>>,
     /// The parametric-constraint glyph currently selected in the viewport.
     /// Entity selection changes clear it so the two selections stay exclusive.
     pub selected_constraint: Option<crate::scene::parametric_constraints::ConstraintId>,
@@ -3208,6 +3214,8 @@ impl Scene {
             selected: HashSet::default(),
             sub_segments: HashMap::default(),
             selected_order: Vec::new(),
+            selected_order_cache: RefCell::new(None),
+            selected_hatch_signature_cache: std::cell::Cell::new(None),
             selected_constraint: None,
             object_isolation: ObjectIsolationState::default(),
             layer_walk: LayerWalkState::default(),
@@ -4655,6 +4663,8 @@ impl Scene {
 
     pub(crate) fn bump_selection_set(&mut self) {
         self.selection_fingerprint_dirty = true;
+        *self.selected_order_cache.get_mut() = None;
+        self.selected_hatch_signature_cache.set(None);
         self.bump_selection();
     }
 
@@ -9042,6 +9052,15 @@ impl Scene {
     }
 
     fn selected_hatch_sig(&self) -> u64 {
+        // Unlike hover highlighting, the hatch overlay depends only on the
+        // selection set and geometry. Reuse its fingerprint across render
+        // frames; scanning every selected LINE merely to find zero hatches
+        // is a measurable cost in large drawings.
+        if let Some((epoch, signature)) = self.selected_hatch_signature_cache.get() {
+            if epoch == self.geometry_epoch {
+                return signature;
+            }
+        }
         let mut sig = 0u64;
         let mut count = 0u64;
         for &h in &self.selected {
@@ -9053,7 +9072,10 @@ impl Scene {
             count += 1;
             sig ^= h.value().wrapping_mul(0x9E37_79B9_7F4A_7C15);
         }
-        sig ^ count
+        let signature = sig ^ count;
+        self.selected_hatch_signature_cache
+            .set(Some((self.geometry_epoch, signature)));
+        signature
     }
 
     pub(super) fn wipeout_models_arc(&self) -> Arc<Vec<HatchModel>> {
