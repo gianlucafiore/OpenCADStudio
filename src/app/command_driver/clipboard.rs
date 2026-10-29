@@ -269,9 +269,11 @@ impl OpenCADStudio {
             let count = self.clipboard.len();
             let by_index = self.finalize_paste(i, Some(translate));
             self.tabs[i].scene.deselect_all();
-            for h in by_index.iter().copied().filter(|h| !h.is_null()) {
-                self.tabs[i].scene.select_entity(h, false);
-            }
+            let pasted: Vec<Handle> = by_index
+                .into_iter()
+                .filter(|handle| !handle.is_null())
+                .collect();
+            self.tabs[i].scene.select_entities(&pasted);
             self.tabs[i].dirty = true;
             // Surface any layers the paste brought in (cross-drawing)
             // in the layer manager and the layer dropdown.
