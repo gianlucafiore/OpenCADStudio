@@ -2165,6 +2165,36 @@ mod block_wire_storage_tests {
     /// Independently coloured segments of the same block must share exact
     /// placements, while visually different placements must not alias.
     #[test]
+    fn pooled_block_placements_require_identical_sources_and_offsets() {
+        use super::{block_placement_inputs_equal, BlockRef, RenderInstance, WireModel};
+
+        let make = |name: &str, x: f64| WireModel {
+            name: name.into(),
+            render_instance: Some(RenderInstance {
+                source_id: 1,
+                translation: [x, 0.0, 0.0],
+            }),
+            ..Default::default()
+        };
+        let first = make("100", 2.0);
+        let equivalent = make("100", 2.0);
+        let other_owner = make("101", 2.0);
+        let moved = make("100", 3.0);
+        assert!(block_placement_inputs_equal(
+            &[BlockRef::from(&first)],
+            &[BlockRef::from(&equivalent)],
+        ));
+        assert!(!block_placement_inputs_equal(
+            &[BlockRef::from(&first)],
+            &[BlockRef::from(&other_owner)],
+        ));
+        assert!(!block_placement_inputs_equal(
+            &[BlockRef::from(&first)],
+            &[BlockRef::from(&moved)],
+        ));
+    }
+
+    #[test]
     fn repeated_block_placements_reuse_one_instance_stream() {
         use super::{instance_run_hash, BlockArenaChunk, BlockWireInstance};
         let run = vec![
