@@ -301,15 +301,19 @@ impl CadCommand for ArrayRectCommand {
         if !array_items_within_limit(&[rows as u64, cols as u64]) {
             return vec![];
         }
+        let total_copies = (rows as usize).saturating_mul(cols as usize);
+        let copy_stride = super::mass_array_copy_stride(self.wire_models.len(), total_copies);
+        let visible_copies = total_copies.div_ceil(copy_stride);
         Self::build_transforms(rows, cols, row_sp, col_sp, self.plane)
             .iter()
+            .step_by(copy_stride)
             .flat_map(|t| {
                 if let EntityTransform::Translate(delta) = t {
                     self.wire_models
                         .iter()
                         .step_by(super::mass_array_preview_stride(
                             self.wire_models.len(),
-                            (rows as usize).saturating_mul(cols as usize),
+                            visible_copies,
                         ))
                         .map(|w| w.translated(delta.as_vec3()))
                         .collect::<Vec<_>>()
@@ -482,14 +486,20 @@ impl CadCommand for ArrayPolarCommand {
         };
         let step_rad = total_deg.to_radians() / count as f64;
         let axis = self.plane.z.as_vec3();
+        let copy_stride = super::mass_array_copy_stride(
+            self.wire_models.len(),
+            count.saturating_sub(1) as usize,
+        );
+        let visible_copies = (count.saturating_sub(1) as usize).div_ceil(copy_stride);
         let mut out: Vec<WireModel> = (1..count)
+            .step_by(copy_stride)
             .flat_map(|n| {
                 let angle_rad = (step_rad * n as f64) as f32;
                 self.wire_models
                     .iter()
                     .step_by(super::mass_array_preview_stride(
                         self.wire_models.len(),
-                        count as usize,
+                        visible_copies,
                     ))
                     .map(move |wire| wire.rotated_about_axis(center, axis, angle_rad))
             })
@@ -1055,15 +1065,19 @@ impl CadCommand for ArrayPathCommand {
     fn on_preview_wires(&mut self, _pt: DVec3) -> Vec<WireModel> {
         let pts = self.preview_samples();
         let transforms = Self::build_transforms(&pts);
+        let copy_stride =
+            super::mass_array_copy_stride(self.wire_models.len(), transforms.len());
+        let visible_copies = transforms.len().div_ceil(copy_stride);
         transforms
             .iter()
+            .step_by(copy_stride)
             .flat_map(|t| match t {
                 EntityTransform::Translate(delta) => self
                     .wire_models
                     .iter()
                     .step_by(super::mass_array_preview_stride(
                         self.wire_models.len(),
-                        transforms.len(),
+                        visible_copies,
                     ))
                     .map(|w| w.translated(delta.as_vec3()))
                     .collect::<Vec<_>>(),
@@ -1074,7 +1088,7 @@ impl CadCommand for ArrayPathCommand {
                     .iter()
                     .step_by(super::mass_array_preview_stride(
                         self.wire_models.len(),
-                        transforms.len(),
+                        visible_copies,
                     ))
                     .map(|w| w.rotated(center.as_vec3(), *angle_rad as f32))
                     .collect::<Vec<_>>(),
