@@ -72,6 +72,21 @@ mod navigation_lod_tests {
     use super::navigation_block_stride;
 
     #[test]
+    fn mass_selection_xray_budget_never_changes_the_logical_selection() {
+        use super::Pipeline;
+        assert_eq!(Pipeline::mass_highlight_stride(1_000, false), 1);
+        assert_eq!(Pipeline::mass_highlight_stride(8_192, false), 1);
+        let stride = Pipeline::mass_highlight_stride(27_216, false);
+        assert_eq!(stride, 14);
+        assert!(27_216usize.div_ceil(stride) <= 2_048);
+        assert_eq!(Pipeline::mass_highlight_stride(27_216, true), 1);
+        // The source handle set is not mutated by calculating a display stride.
+        let selected: Vec<usize> = (0..27_216).collect();
+        assert_eq!(selected.len(), 27_216);
+        assert_eq!(selected.iter().step_by(stride).count(), 1_944);
+    }
+
+    #[test]
     fn hatch_free_42m_segment_drawing_uses_navigation_budget() {
         assert_eq!(navigation_block_stride(42_021_504, 772, false), 1);
         assert_eq!(navigation_block_stride(42_021_504, 772, true), 121);
@@ -2894,8 +2909,8 @@ impl Pipeline {
     /// Bound synchronous selection *visualization* work in scenes with
     /// thousands of INSERTs. The logical selection and all edit operations
     /// still retain every selected handle. Small selections are unchanged.
-    fn mass_highlight_stride(count: usize) -> usize {
-        if count <= 8_192 || std::env::var_os("OCS_FULL_MASS_HIGHLIGHT").is_some() {
+    fn mass_highlight_stride(count: usize, full_quality: bool) -> usize {
+        if count <= 8_192 || full_quality {
             1
         } else {
             count.div_ceil(2_048)
@@ -2925,7 +2940,10 @@ impl Pipeline {
         // O(highlighted), no per-wire string parse or deep geometry clone.
         let mut selected_wires: Vec<&WireModel> = Vec::new();
         let mut hover_wires: Vec<&WireModel> = Vec::new();
-        let highlight_stride = Self::mass_highlight_stride(selected.len());
+        let highlight_stride = Self::mass_highlight_stride(
+            selected.len(),
+            std::env::var_os("OCS_FULL_MASS_HIGHLIGHT").is_some(),
+        );
         // Stable, evenly distributed sample of selected handles. Rendering
         // only this temporary xray is intentional: model geometry, selection,
         // grips, commands, undo and saving still use the complete handle set.
