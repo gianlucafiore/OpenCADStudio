@@ -307,6 +307,10 @@ impl CadCommand for ArrayRectCommand {
                 if let EntityTransform::Translate(delta) = t {
                     self.wire_models
                         .iter()
+                        .step_by(super::mass_array_preview_stride(
+                            self.wire_models.len(),
+                            (rows as usize).saturating_mul(cols as usize),
+                        ))
                         .map(|w| w.translated(delta.as_vec3()))
                         .collect::<Vec<_>>()
                 } else {
@@ -483,6 +487,10 @@ impl CadCommand for ArrayPolarCommand {
                 let angle_rad = (step_rad * n as f64) as f32;
                 self.wire_models
                     .iter()
+                    .step_by(super::mass_array_preview_stride(
+                        self.wire_models.len(),
+                        count as usize,
+                    ))
                     .map(move |wire| wire.rotated_about_axis(center, axis, angle_rad))
             })
             .collect();
@@ -1053,6 +1061,10 @@ impl CadCommand for ArrayPathCommand {
                 EntityTransform::Translate(delta) => self
                     .wire_models
                     .iter()
+                    .step_by(super::mass_array_preview_stride(
+                        self.wire_models.len(),
+                        transforms.len(),
+                    ))
                     .map(|w| w.translated(delta.as_vec3()))
                     .collect::<Vec<_>>(),
                 EntityTransform::Rotate {
@@ -1060,6 +1072,10 @@ impl CadCommand for ArrayPathCommand {
                 } => self
                     .wire_models
                     .iter()
+                    .step_by(super::mass_array_preview_stride(
+                        self.wire_models.len(),
+                        transforms.len(),
+                    ))
                     .map(|w| w.rotated(center.as_vec3(), *angle_rad as f32))
                     .collect::<Vec<_>>(),
                 _ => vec![],
