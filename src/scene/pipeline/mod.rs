@@ -417,6 +417,8 @@ pub struct Pipeline {
     /// `render` skips the (per-pixel, GPU-dominating) hatch pass this frame. The
     /// scene-render cache holds the full-quality frame once the view settles.
     pub skip_hatch_frame: bool,
+    /// Camera motion / transformation preview LOD, independent of hatch.
+    pub navigation_lod: bool,
     /// Skip the canvas entirely — no clear colour, no background pass — so
     /// whatever was drawn underneath this viewport shows through it.
     pub skip_background: bool,
@@ -2540,6 +2542,7 @@ impl Pipeline {
             render_sig: u64::MAX,
             skip_geometry: false,
             skip_hatch_frame: false,
+            navigation_lod: false,
             skip_background: false,
             slot_id: u64::MAX,
         }
@@ -4923,7 +4926,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 // replaying all of them on every pan/zoom frame saturates an
                 // integrated GPU. Temporarily draw an evenly distributed
                 // subset of segment definitions, never the complete resident
-                // geometry twice. The settle frame (skip_hatch_frame=false)
+                // geometry twice. The settle frame (navigation_lod=false)
                 // redraws *every* definition at full precision.
                 let block_segment_count = self.gpu_block_wires.iter().fold(
                     0u64,
@@ -4938,15 +4941,30 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                     || !self.gpu_preview_block_wires.is_empty()
                     || !self.gpu_preview_circles.is_empty()
                     || !self.gpu_preview_ellipses.is_empty();
-                let navigation_block_stride = if (self.skip_hatch_frame || live_ghost)
-                    && block_segment_count > 2_000_000
+                let navigation_block_stride = if (self.navigation_lod || live_ghost)
+                    && block_segment_count > 350_000
                 {
-                    block_segment_count.div_ceil(2_000_000)
-                        .min(32)
+                    // 772 segments × 54k INSERTs = 42M segment draws.
+                    // A previous cap of 32 still drew >=1.3M segments and
+                    // stalled Intel Vulkan for hundreds of milliseconds.
+                    // A large stride is safe here: only the navigation image
+                    // is simplified; the full resident buffers remain intact.
+                    block_segment_count.div_ceil(350_000)
+                        .min(self.gpu_block_wires.len() as u64)
                         .max(1) as usize
                 } else {
                     1
                 };
+                if navigation_block_stride > 1 && crate::perf::enabled() {
+                    crate::perf_record!(
+                        "[perf] wire-nav-lod active={} preview={} segments={} stride={} batches={}",
+                        self.navigation_lod,
+                        live_ghost,
+                        block_segment_count,
+                        navigation_block_stride,
+                        self.gpu_block_wires.len(),
+                    );
+                }
                 for (batch_index, wire) in self.gpu_block_wires.iter().enumerate() {
                     if batch_index % navigation_block_stride != 0
                         || wire.instance_count == 0
@@ -5238,8 +5256,8 @@ analytic={:.1} regular={:.1} blocks={:.1}",
             // segments is the bottleneck on integrated GPUs (0.5–1 s/frame).
             // Defer only the expensive xray overlay until navigation settles:
             // the original geometry and the actual selected set are unchanged.
-            // skip_hatch_frame already marks the navigation LOD and its
-            // transition invalidates the rendered-scene cache.
+            // navigation_lod is independent from hatch and its transition
+            // invalidates the rendered-scene cache.
             let highlighted_segments: u64 = self
                 .gpu_selected_block_wires
                 .iter()
@@ -5259,7 +5277,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 || !self.gpu_preview_circles.is_empty()
                 || !self.gpu_preview_ellipses.is_empty();
             let defer_mass_highlight =
-                (self.skip_hatch_frame || live_mass_edit) && highlighted_segments > 80_000;
+                (self.navigation_lod || live_mass_edit) && highlighted_segments > 80_000;
             if !defer_mass_highlight
                 && (!self.gpu_selected_wires.is_empty()
                     || !self.gpu_selected_block_wires.is_empty()
