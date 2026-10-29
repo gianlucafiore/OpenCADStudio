@@ -182,6 +182,23 @@ mod tests {
     }
 
     #[test]
+    fn mass_move_preview_is_bounded_but_commit_keeps_every_handle() {
+        let handles: Vec<Handle> = (1..=50_000).map(Handle::new).collect();
+        let wires = vec![WireModel::default(); 25_000];
+        let mut cmd = MoveCommand::new(handles.clone(), wires);
+        assert!(matches!(cmd.on_point(DVec3::ZERO), CmdResult::NeedPoint));
+        let ghost = cmd.on_preview_wires(DVec3::new(5.0, 3.0, 0.0));
+        assert!(ghost.len() <= 2_050, "mass MOVE preview must stay bounded");
+        match cmd.on_point(DVec3::new(5.0, 3.0, 0.0)) {
+            CmdResult::TransformSelected(selected, EntityTransform::Translate(delta)) => {
+                assert_eq!(selected, handles);
+                assert_eq!(delta, DVec3::new(5.0, 3.0, 0.0));
+            }
+            _ => panic!("MOVE should still commit the exact full selection"),
+        }
+    }
+
+    #[test]
     fn enter_at_second_point_uses_base_as_displacement() {
         let mut cmd = MoveCommand::new(vec![Handle::new(1)], vec![]);
         cmd.on_point(DVec3::new(5.0, -2.0, 0.0));
