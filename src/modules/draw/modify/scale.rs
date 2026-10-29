@@ -236,6 +236,9 @@ impl CadCommand for ScaleCommand {
             .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.scaled(base.as_vec3(), factor))
             .collect();
+        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+            out.push(extent.scaled(base.as_vec3(), factor));
+        }
         out.push(WireModel::solid(
             "rubber_band".into(),
             vec![
