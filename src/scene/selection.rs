@@ -1692,6 +1692,53 @@ mod tests {
     }
 
     #[test]
+    fn selection_order_snapshot_invalidates_on_changes_but_not_hover() {
+        let mut scene = Scene::new();
+        let one = Handle::new(11);
+        let two = Handle::new(12);
+        scene.select_entity(one, false);
+        assert_eq!(scene.selected_handles_in_order(), vec![one]);
+        assert!(scene.selected_order_cache.borrow().is_some());
+
+        // Hover changes the GPU highlight generation, not the selected set.
+        scene.set_hover_highlight(Some(Handle::new(99)));
+        assert_eq!(scene.selected_handles_in_order(), vec![one]);
+        assert!(scene.selected_order_cache.borrow().is_some());
+
+        scene.select_entity(two, false);
+        assert!(scene.selected_order_cache.borrow().is_none());
+        assert_eq!(scene.selected_handles_in_order(), vec![one, two]);
+
+        scene.deselect_entity(one);
+        assert_eq!(scene.selected_handles_in_order(), vec![two]);
+        scene.deselect_all();
+        assert!(scene.selected_handles_in_order().is_empty());
+    }
+
+    #[test]
+    fn selected_hatch_signature_cache_tracks_hatch_membership() {
+        let mut scene = Scene::new();
+        let line = scene.add_entity(EntityType::Line(codec::entities::Line::from_points(
+            codec::types::Vector3::new(0.0, 0.0, 0.0),
+            codec::types::Vector3::new(1.0, 0.0, 0.0),
+        )));
+        let hatch = scene.add_entity(EntityType::Hatch(Box::new(codec::entities::Hatch::new())));
+        scene.select_entity(line, false);
+        assert_eq!(scene.selected_hatch_sig(), 0);
+        assert_eq!(scene.selected_hatch_sig(), 0);
+        assert!(scene.selected_hatch_signature_cache.get().is_some());
+
+        scene.select_entity(hatch, false);
+        assert!(scene.selected_hatch_signature_cache.get().is_none());
+        let sig = scene.selected_hatch_sig();
+        assert_ne!(sig, 0);
+        assert_eq!(scene.selected_hatch_sig(), sig);
+
+        scene.deselect_entity(hatch);
+        assert_eq!(scene.selected_hatch_sig(), 0);
+    }
+
+    #[test]
     fn selection_fingerprint_tracks_final_set_only() {
         let mut scene = Scene::default();
         let first = Handle::new(1);
