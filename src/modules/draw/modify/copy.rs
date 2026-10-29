@@ -35,6 +35,7 @@ enum Step {
 pub struct CopyCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    mass_outline: Option<WireModel>,
     step: Step,
     count: usize,
     /// Number of items for an Array copy (None = place copies one at a time).
@@ -51,6 +52,7 @@ impl CopyCommand {
     pub fn new(handles: Vec<Handle>, wire_models: Vec<WireModel>) -> Self {
         Self {
             handles,
+            mass_outline: super::mass_preview_extent(&wire_models),
             wire_models,
             step: Step::Base,
             count: 0,
@@ -255,7 +257,7 @@ impl CadCommand for CopyCommand {
             .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.translated(delta.as_vec3()))
             .collect();
-        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+        if let Some(extent) = &self.mass_outline {
             out.push(extent.translated(delta.as_vec3()));
         }
         out.push(WireModel::solid(
