@@ -222,6 +222,9 @@ pub struct ViewportData {
     /// into the render signature so the settle frame re-renders hatches once and
     /// the scene-render cache holds it. See [`Scene::navigating_lod`].
     pub(in crate::scene) skip_hatch: bool,
+    /// Navigation LOD is independent of the hatch LOD setting: drawings
+    /// containing only repeated lines and blocks still need reduced work.
+    pub(in crate::scene) navigation_lod: bool,
     /// True when this viewport must not paint a canvas of its own. A floating
     /// viewport on a paper layout sits ON the sheet: anything it painted first
     /// would cover the page it is supposed to be a window in.
@@ -516,6 +519,7 @@ impl shader::Primitive for Primitive {
             }
             // Interaction LOD: skip the hatch draw this frame while navigating.
             inner.skip_hatch_frame = vp.skip_hatch;
+            inner.navigation_lod = vp.navigation_lod;
             inner.skip_background = vp.skip_background;
             if skip {
                 if vp.show_viewcube {
@@ -1527,6 +1531,7 @@ fn render_signature(
     // Interaction-LOD hatch suppression: differs the signature so the settle
     // frame (skip_hatch flips false) re-renders with hatches and re-caches.
     vp.skip_hatch.hash(&mut h);
+    vp.navigation_lod.hash(&mut h);
     vp.skip_background.hash(&mut h);
     placement.size.width.hash(&mut h);
     placement.size.height.hash(&mut h);
@@ -5265,6 +5270,7 @@ impl Scene {
             // (hatched) frame once it settles. Only applied to the on-screen
             // Model / paper content — the paper *sheet* keeps its fills.
             skip_hatch: self.hatch_lod_enabled() && navigating,
+            navigation_lod: navigating,
             // A floating viewport shows the page behind it unless it has a
             // background of its own.
             skip_background: !inst.paper_sheet
