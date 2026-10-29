@@ -382,6 +382,13 @@ impl CadCommand for RotateCommand {
                 w.rotated_about_axis(center.as_vec3(), self.plane.z.as_vec3(), angle_rad as f32)
             })
             .collect();
+        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+            previews.push(extent.rotated_about_axis(
+                center.as_vec3(),
+                self.plane.z.as_vec3(),
+                angle_rad as f32,
+            ));
+        }
         let radius = self.plane.vector_to_local(pt - center).truncate().length();
         previews.extend(self.angle_guide(center, radius, guide_angle));
         previews
