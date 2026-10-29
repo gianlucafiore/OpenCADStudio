@@ -1305,11 +1305,29 @@ impl BlockWireGpu {
                     built
                 }
             };
-            let instances = block_instances(&group, base, mesh_edge, depth_map);
+            // A source block can contain hundreds of independently coloured
+            // segments, but each segment uses the same INSERT placements.
+            // Keep per-segment draw-order offsets in WireConst instead of
+            // duplicating a full 32-byte depth+translation record for every
+            // segment and every INSERT. If nested stubs vary their local
+            // offsets between copies, retain the original per-wire depths.
+            let shared_depth_offset = block_shared_depth_offset(&group, mesh_edge);
+            let instances = block_instances(
+                &group,
+                base,
+                mesh_edge,
+                depth_map,
+                shared_depth_offset.is_some(),
+            );
             if instances.is_empty() {
                 continue;
             }
-            arena.push(&geometry, &instances, mesh_edge);
+            arena.push(
+                &geometry,
+                &instances,
+                mesh_edge,
+                shared_depth_offset.unwrap_or(0.0),
+            );
         }
         // Release geometry that this build no longer uses.
         if let Some(cache) = cache {
@@ -1361,7 +1379,32 @@ struct BlockArenaChunk {
     verts: Vec<BlockWireVertex>,
     consts: Vec<WireConst>,
     instances: Vec<BlockWireInstance>,
+    /// Exact-match index for already uploaded INSERT placement streams.
+    /// Multiple block segments can draw different geometry from the same
+    /// instance-buffer range; the vertex shader supplies their own constants.
+    instance_runs: rustc_hash::FxHashMap<u64, Vec<(usize, usize)>>,
     batches: Vec<PendingBlockBatch>,
+}
+
+impl BlockArenaChunk {
+    fn reused_instance_start(&self, run: &[BlockWireInstance], hash: u64) -> Option<usize> {
+        let bytes: &[u8] = bytemuck::cast_slice(run);
+        self.instance_runs.get(&hash)?.iter().find_map(|&(start, len)| {
+            if len != run.len() {
+                return None;
+            }
+            let existing: &[u8] = bytemuck::cast_slice(&self.instances[start..start + len]);
+            (existing == bytes).then_some(start)
+        })
+    }
+}
+
+fn instance_run_hash(run: &[BlockWireInstance]) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = rustc_hash::FxHasher::default();
+    hash.write_usize(run.len());
+    hash.write(bytemuck::cast_slice(run));
+    hash.finish()
 }
 
 /// One definition's slice of an arena, waiting for the arena's buffers.
@@ -1406,6 +1449,7 @@ impl BlockArenaBuilder {
         geometry: &std::sync::Arc<BlockGeometryRecords>,
         instances: &[BlockWireInstance],
         mesh_edge: bool,
+        depth_offset: f32,
     ) {
         self.segments += geometry.records.len();
         // A definition's geometry, constants and placements must land in the
@@ -1413,9 +1457,10 @@ impl BlockArenaBuilder {
         // definition too large for one arena is split into pieces that each
         // carry their own copy of the constants.
         for run in instances.chunks(self.max_instances) {
+            let run_hash = instance_run_hash(run);
             let mut placed = 0usize;
             while placed < geometry.records.len() {
-                let index = self.chunk_with_room(run.len());
+                let index = self.chunk_with_room(run, run_hash);
                 let chunk = &mut self.chunks[index];
                 let room = (self.max_verts - chunk.verts.len()) / self.per_segment;
                 let take = room.min(geometry.records.len() - placed);
@@ -1432,9 +1477,23 @@ impl BlockArenaBuilder {
                     }
                 }
                 let const_offset = (chunk.consts.len() * self.const_stride) as u32;
-                chunk.consts.push(geometry.constant);
-                let first_instance = chunk.instances.len() as u32;
-                chunk.instances.extend_from_slice(run);
+                let mut constant = geometry.constant;
+                constant.draw_depth = depth_offset;
+                chunk.consts.push(constant);
+                let first_instance = if let Some(existing) =
+                    chunk.reused_instance_start(run, run_hash)
+                {
+                    existing as u32
+                } else {
+                    let start = chunk.instances.len();
+                    chunk.instances.extend_from_slice(run);
+                    chunk
+                        .instance_runs
+                        .entry(run_hash)
+                        .or_default()
+                        .push((start, run.len()));
+                    start as u32
+                };
                 chunk.batches.push(PendingBlockBatch {
                     first_vertex,
                     vertex_count: take as u32 * 6,
@@ -1452,11 +1511,12 @@ impl BlockArenaBuilder {
     /// The open arena when it has room for one more segment, one more set of
     /// constants and `instances` placements; a fresh one otherwise. `instances`
     /// never exceeds one arena's budget, so a fresh arena always has room.
-    fn chunk_with_room(&mut self, instances: usize) -> usize {
+    fn chunk_with_room(&mut self, instances: &[BlockWireInstance], hash: u64) -> usize {
         let fits = self.chunks.last().is_some_and(|chunk| {
             self.max_verts - chunk.verts.len() >= self.per_segment
                 && chunk.consts.len() < self.max_consts
-                && self.max_instances - chunk.instances.len() >= instances
+                && (chunk.reused_instance_start(instances, hash).is_some()
+                    || self.max_instances - chunk.instances.len() >= instances.len())
         });
         if !fits {
             self.chunks.push(BlockArenaChunk::default());
@@ -1560,11 +1620,31 @@ impl BlockArenaBuilder {
 }
 
 /// Placements and draw depths relative to the group's first instance.
+/// Local draw-order offset shared by every copy of this source geometry.
+/// A variable depth_delta (for example nested blocks in different insert
+/// contexts) must retain the legacy exact per-copy depth calculation.
+fn block_shared_depth_offset(group: &[BlockRef<'_>], mesh_edge: bool) -> Option<f32> {
+    if mesh_edge {
+        return Some(0.0);
+    }
+    let offset = |block: &BlockRef<'_>| {
+        block
+            .wire
+            .depth_override
+            .map(|local| local + block.depth_delta)
+            .unwrap_or(0.0)
+    };
+    let first = offset(group.first()?);
+    (first.is_finite() && group.iter().all(|b| offset(b).to_bits() == first.to_bits()))
+        .then_some(first)
+}
+
 fn block_instances(
     group: &[BlockRef<'_>],
     base: crate::scene::model::instance_model::RenderInstance,
     mesh_edge: bool,
     depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
+    shared_parent_depth: bool,
 ) -> Vec<BlockWireInstance> {
     group
         .iter()
@@ -1583,14 +1663,19 @@ fn block_instances(
                     (delta[1] - high[1] as f64) as f32,
                     (delta[2] - high[2] as f64) as f32,
                 ],
-                depth: [
-                    if mesh_edge {
-                        0.0
-                    } else {
-                        block.draw_depth(depth_map)
-                    },
-                    0.0,
-                ],
+                depth: if mesh_edge {
+                    [0.0, 0.0]
+                } else if shared_parent_depth {
+                    // The parent INSERT carries (base depth, depth range).
+                    // The segment-local offset rides in WireConst, so each
+                    // segment can reuse one GPU instance stream.
+                    fast_parse_u64(&block.named().name)
+                        .and_then(|handle| depth_map.get(&handle).copied())
+                        .unwrap_or([0.0, 0.0])
+                } else {
+                    // Varying nested-local offsets: keep precise legacy depth.
+                    [block.draw_depth(depth_map), 0.0]
+                },
             })
         })
         .collect()
