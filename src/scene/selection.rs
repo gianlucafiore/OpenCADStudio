@@ -229,6 +229,17 @@ impl Scene {
     }
 
     pub(crate) fn selected_handles_in_order(&self) -> Vec<Handle> {
+        // In the normal case selected_order is already a unique, complete
+        // ordered index maintained by select/deselect/replace_selection.
+        // Avoid rebuilding a HashSet and sorting 50k handles each time a
+        // property panel, command, or dock queries the current selection.
+        // Keep the reconciliation fallback for external/script mutations.
+        if self.selected_order.len() == self.selected.len()
+            && self.selected_order.iter().all(|h| self.selected.contains(h))
+        {
+            return self.selected_order.clone();
+        }
+
         let mut seen = HashSet::default();
         let mut ordered: Vec<_> = self
             .selected_order
@@ -1189,7 +1200,8 @@ impl Scene {
             // reference-only). Undo restores it through the recorded channel.
             self.reference_only.remove(h);
             selection_changed |= self.selected.remove(&h);
-            self.selected_order.retain(|selected| *selected != h);
+            // Do not compact selected_order once per erased handle: bulk ERASE
+            // of 50k selected entities otherwise becomes O(n²).
             if self.hover_highlight == Some(h) {
                 self.hover_highlight = None;
                 hover_changed = true;
@@ -1213,6 +1225,9 @@ impl Scene {
             self.solid_models.remove(&h);
             handle_set.insert(h);
             erased.push((h, ChangeKind::Removed));
+        }
+        if !handle_set.is_empty() {
+            self.selected_order.retain(|selected| !handle_set.contains(selected));
         }
         if selection_changed {
             self.bump_selection_set();
@@ -1647,6 +1662,24 @@ mod tests {
             scene.entity_type_names_in_layout().as_slice(),
             ["Circle", "Line"]
         );
+    }
+
+    #[test]
+    fn large_selection_order_tracks_bulk_add_remove_without_duplicate_rebuild() {
+        let mut scene = Scene::new();
+        let handles: Vec<Handle> = (1..=50_000).map(Handle::new).collect();
+        scene.select_entities(&handles);
+        assert_eq!(scene.selected_handles_in_order(), handles);
+        assert_eq!(scene.selected_handles_in_order(), handles);
+        scene.deselect_entities(&handles[..25_000]);
+        assert_eq!(scene.selected_handles_in_order(), handles[25_000..]);
+        scene.select_entities(&handles[..25_000]);
+        let expected: Vec<Handle> = handles[25_000..]
+            .iter()
+            .chain(handles[..25_000].iter())
+            .copied()
+            .collect();
+        assert_eq!(scene.selected_handles_in_order(), expected);
     }
 
     #[test]
