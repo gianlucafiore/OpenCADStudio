@@ -1406,7 +1406,6 @@ struct BlockArenaBuilder {
     bytes: u64,
     requested_placements: usize,
     uploaded_placements: usize,
-    instance_hash_memo: rustc_hash::FxHashMap<(usize, usize), u64>,
 }
 
 #[derive(Default)]
@@ -1498,7 +1497,6 @@ impl BlockArenaBuilder {
             bytes: 0,
             requested_placements: 0,
             uploaded_placements: 0,
-            instance_hash_memo: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -1516,11 +1514,7 @@ impl BlockArenaBuilder {
         // definition too large for one arena is split into pieces that each
         // carry their own copy of the constants.
         for run in instances.chunks(self.max_instances) {
-            let key = (run.as_ptr() as usize, run.len());
-            let run_hash = *self
-                .instance_hash_memo
-                .entry(key)
-                .or_insert_with(|| instance_run_hash(run));
+            let run_hash = instance_run_hash(run);
             let mut placed = 0usize;
             while placed < geometry.records.len() {
                 let index = self.chunk_with_room(run, run_hash);
