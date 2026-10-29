@@ -2791,6 +2791,21 @@ impl Pipeline {
         Vec<wire_gpu::BlockRef<'a>>,
     ) {
         use crate::par::prelude::*;
+        // A massive selection of INSERTs consists almost entirely of block
+        // instance wires. They are not analytic shapes: the generic parallel
+        // classifier would allocate 327k (None, None, bool) records and merge
+        // them again before reaching the block renderer. Avoid that work.
+        if !wires.is_empty()
+            && wires.iter().all(|wire| {
+                wire.render_instance.is_some() || wire.stub.is_some()
+            })
+        {
+            let mut blocks = Vec::with_capacity(wires.len());
+            for &wire in wires {
+                wire_gpu::push_block_refs(wire, &mut blocks);
+            }
+            return (Vec::new(), Vec::new(), Vec::new(), blocks);
+        }
         // Pure per-wire work, so it fans out; `collect` on an indexed
         // parallel iterator keeps the order, and the order is what decides
         // the instance layout.
