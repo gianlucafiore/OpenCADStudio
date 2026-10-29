@@ -2290,6 +2290,25 @@ impl Scene {
         plot_only: bool,
         viewport: Option<Handle>,
     ) -> Vec<HatchModel> {
+        // A block-dense but WIPEOUT-free drawing must not traverse the entire
+        // INSERT graph just to build an empty mask pass. A move invalidates
+        // this derived cache; before this guard, 54k repeated INSERTs caused
+        // ~9–11 seconds of synchronous graph walking after each mass MOVE.
+        //
+        // Inspect *all* document entities (including block definitions), not
+        // just top-level model entities. If any nested WIPEOUT exists we keep
+        // the exact existing graph path, preserving XCLIP, draw order, paper
+        // space, selection tint and printing.
+        if !self
+            .document
+            .entities()
+            .any(|entity| matches!(entity, EntityType::Wipeout(_)))
+        {
+            if crate::perf::enabled() {
+                crate::perf_record!("[perf] wipeout-graph skipped=no-source");
+            }
+            return Vec::new();
+        }
         let depth_map = self.draw_depth_map();
         let visibility_reveal = if plot_only {
             rustc_hash::FxHashSet::default()
