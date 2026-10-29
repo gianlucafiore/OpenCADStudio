@@ -137,6 +137,7 @@ impl CadCommand for MoveCommand {
         let mut out: Vec<WireModel> = self
             .wire_models
             .iter()
+            .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.translated(delta.as_vec3()))
             .collect();
         out.push(WireModel::solid(
