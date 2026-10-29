@@ -1971,6 +1971,9 @@ impl Scene {
     /// document entity moves, so include that hidden target and reuse the full
     /// block-expansion path for nested inserts, inherited styles and XCLIP.
     pub(super) fn preview_insert_hatch_models(&self, handles: &[Handle]) -> Vec<HatchModel> {
+        if handles.is_empty() || !self.drawing_contains_hatch_sources() {
+            return Vec::new();
+        }
         let targets: rustc_hash::FxHashSet<Handle> = handles
             .iter()
             .copied()
