@@ -59,6 +59,7 @@ enum Step {
 pub struct RotateCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    mass_outline: Option<WireModel>,
     step: Step,
     default_angle: f64, // degrees
     plane: WorkingPlane,
@@ -73,6 +74,7 @@ impl RotateCommand {
     pub fn new(handles: Vec<Handle>, wire_models: Vec<WireModel>) -> Self {
         Self {
             handles,
+            mass_outline: super::mass_preview_extent(&wire_models),
             wire_models,
             step: Step::Center,
             default_angle: defaults::get_rotate_angle(),
@@ -382,7 +384,7 @@ impl CadCommand for RotateCommand {
                 w.rotated_about_axis(center.as_vec3(), self.plane.z.as_vec3(), angle_rad as f32)
             })
             .collect();
-        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+        if let Some(extent) = &self.mass_outline {
             previews.push(extent.rotated_about_axis(
                 center.as_vec3(),
                 self.plane.z.as_vec3(),
