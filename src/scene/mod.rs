@@ -12105,6 +12105,120 @@ impl Scene {
         }
     }
 
+    /// Fast exact-positive path for large *crossing* boxes in axis-aligned
+    /// orthographic model views. A wire whose entire world-space AABB lies
+    /// strictly inside the crossing rectangle is necessarily hit: no segment
+    /// projection or expansion of a block's nested prototype is needed.
+    ///
+    /// Everything touching the boundary, unbounded, tilted, or nonresident
+    /// continues through the original precise hit-test path unchanged. This
+    /// is intentionally NOT used for left-to-right window selection: a single
+    /// wire fitting the rectangle does not prove that every wire of its
+    /// parent entity fits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn crossing_box_candidates_with_contained_hits(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+        screen_rect: [f32; 4],
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        crossing: bool,
+    ) -> (
+        crate::scene::pick::interaction_index::InteractionCandidates,
+        Vec<Handle>,
+    ) {
+        let fallback = || {
+            (
+                self.interaction_candidates_in_aabb(
+                    Arc::clone(&wires),
+                    aabb,
+                    screen_rect,
+                    view_rot,
+                    eye,
+                    bounds,
+                ),
+                Vec::new(),
+            )
+        };
+        let axis_aligned = view_rot.x_axis.y.abs() < 1e-7
+            && view_rot.y_axis.x.abs() < 1e-7
+            && view_rot.z_axis.x.abs() < 1e-7
+            && view_rot.z_axis.y.abs() < 1e-7
+            && (view_rot.w_axis.w - 1.0).abs() < 1e-6;
+        if !crossing
+            || !axis_aligned
+            || !aabb.iter().all(|v| v.is_finite())
+            || self.current_layout != "Model"
+            || !self.interaction_source_is_resident(&wires, bounds.height)
+            || !self.interaction_index_worthwhile(&wires)
+        {
+            return fallback();
+        }
+
+        // The same padded area query used by interaction_candidates_in_aabb:
+        // widening accounts for lineweight/point markers, while the fast
+        // positive test below stays strictly inside the *unpadded* box.
+        let pad_px = self.indexed_interaction_pick_radius(&wires, 0.0, bounds.height, true);
+        let world_x_px = ((view_rot.x_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.x_axis.y * bounds.height * 0.5).powi(2))
+        .sqrt();
+        let world_y_px = ((view_rot.y_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.y_axis.y * bounds.height * 0.5).powi(2))
+        .sqrt();
+        let scale = world_x_px.min(world_y_px);
+        let pad = if scale > 1e-6 {
+            pad_px as f64 / scale as f64
+        } else {
+            0.0
+        };
+        let query = [
+            aabb[0] - pad,
+            aabb[1] - pad,
+            aabb[2] + pad,
+            aabb[3] + pad,
+        ];
+        let mut candidates = self.indexed_interaction_candidates_xy_stubbed(
+            wires,
+            query,
+            false,
+            true,
+            None,
+        );
+        // Strict interior check tolerates f32 AABB rounding at large drawing
+        // coordinates. Boundary-touching wires are left for the precise pass.
+        let margin = (aabb[2] - aabb[0])
+            .abs()
+            .max((aabb[3] - aabb[1]).abs())
+            * 1e-6
+            + 1e-5;
+        let contained = |wire: &WireModel| {
+            let b = wire.aabb;
+            !wire.snap_only
+                && !wire.reference_only
+                && b.iter().all(|v| v.is_finite())
+                && (b[0] as f64) > aabb[0] + margin
+                && (b[1] as f64) > aabb[1] + margin
+                && (b[2] as f64) < aabb[2] - margin
+                && (b[3] as f64) < aabb[3] - margin
+        };
+        let mut contained_handles = HashSet::default();
+        for wire in candidates.iter().filter(|wire| contained(wire)) {
+            if let Some(handle) = Self::handle_from_wire_name(&wire.name) {
+                contained_handles.insert(handle);
+            }
+        }
+        if contained_handles.is_empty() {
+            return (candidates.materialize_stubs(), Vec::new());
+        }
+        candidates.exclude_wires(contained);
+        (
+            candidates.materialize_stubs(),
+            contained_handles.into_iter().collect(),
+        )
+    }
+
     pub fn interaction_candidate_handles(
         &self,
         candidates: &crate::scene::pick::interaction_index::InteractionCandidates,
