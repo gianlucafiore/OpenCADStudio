@@ -15069,6 +15069,52 @@ mod journal_tests {
     }
 
     #[test]
+    fn null_owner_block_membership_uses_the_reverse_index_after_mass_move() {
+        use codec::entities::Line;
+        use codec::types::Vector3;
+
+        let mut s = Scene::new();
+        let model = s.model_space_block_handle();
+        let unrelated = s
+            .document
+            .block_records
+            .iter()
+            .find(|br| br.handle != model && !br.handle.is_null())
+            .map(|br| br.handle)
+            .expect("the standard drawing has another block record");
+        let mut handles = Vec::with_capacity(4096);
+        for n in 0..4096 {
+            let point = Vector3::new(n as f64, 0.0, 0.0);
+            let handle = s.add_entity(EntityType::Line(Line::from_points(
+                point,
+                point + Vector3::new(0.0, 1.0, 0.0),
+            )));
+            // Imported DXFs can omit owner 330 even when BlockRecord owns
+            // the entity explicitly via its entity_handles collection.
+            s.document.get_entity_mut(handle).unwrap().common_mut().owner_handle =
+                Handle::NULL;
+            handles.push(handle);
+        }
+        for &handle in &handles {
+            assert!(s.belongs_to_visible_block(handle, Handle::NULL, model));
+            assert!(!s.belongs_to_visible_block(handle, Handle::NULL, unrelated));
+        }
+        // A mass edit changes the epoch; the cached index must rebuild from
+        // actual BlockRecord memberships, without an O(handles^2) search.
+        s.bump_entities(
+            &handles
+                .iter()
+                .copied()
+                .map(|h| (h, ChangeKind::Modified))
+                .collect::<Vec<_>>(),
+        );
+        for &handle in &handles {
+            assert!(s.belongs_to_visible_block(handle, Handle::NULL, model));
+            assert!(!s.belongs_to_visible_block(handle, Handle::NULL, unrelated));
+        }
+    }
+
+    #[test]
     fn replay_reports_changes_since_a_synced_epoch() {
         let mut s = Scene::new();
         let e0 = s.geometry_epoch;
