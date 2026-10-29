@@ -1062,6 +1062,13 @@ impl OpenCADStudio {
                 crossing,
             );
         timing.candidates = elapsed(t_sel);
+        if crate::perf::enabled() && !contained_hits.is_empty() {
+            crate::perf_record!(
+                "[perf] select-crossing-fast contained={} boundary_wires={}",
+                contained_hits.len(),
+                area_candidates.len(),
+            );
+        }
         let t_hit = crate::perf::enabled().then(Instant::now);
         let scene = &self.tabs[i].scene;
         let candidate_handles = scene.interaction_candidate_handles(&area_candidates);
