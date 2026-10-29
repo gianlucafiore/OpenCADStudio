@@ -397,11 +397,13 @@ impl Scene {
                     out.extend(self.hatch_outline_wire(handle));
                 }
                 Some(entity) => {
-                    let hit = resident_ok.then(|| {
-                        let memo = self.resident_tess_memo.borrow();
-                        let run = memo.get(&handle)?;
-                        self.resolve_memo_run(handle, run)
-                    }).flatten();
+                    let hit = resident_ok
+                        .then(|| {
+                            let memo = self.resident_tess_memo.borrow();
+                            let run = memo.get(&handle)?;
+                            self.resolve_memo_run(handle, run)
+                        })
+                        .flatten();
                     if let Some(hit) = hit {
                         out.extend_from_slice(hit.wires());
                     } else {
