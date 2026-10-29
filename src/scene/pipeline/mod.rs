@@ -4918,8 +4918,36 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 }
                 let mut block_black_active = false;
                 pass.set_pipeline(&self.block_wire_pipeline);
-                for wire in self.gpu_block_wires.iter() {
-                    if wire.instance_count == 0 || (!show_3d_edges && wire.is_3d_mesh_edge) {
+                // Interactive navigation has a strict frame budget. This
+                // drawing can contain 42 million block/segment placements:
+                // replaying all of them on every pan/zoom frame saturates an
+                // integrated GPU. Temporarily draw an evenly distributed
+                // subset of segment definitions, never the complete resident
+                // geometry twice. The settle frame (skip_hatch_frame=false)
+                // redraws *every* definition at full precision.
+                let block_segment_count = self.gpu_block_wires.iter().fold(
+                    0u64,
+                    |sum, wire| {
+                        sum.saturating_add(
+                            u64::from(wire.vertex_count / 6)
+                                * u64::from(wire.instance_count),
+                        )
+                    },
+                );
+                let navigation_block_stride = if self.skip_hatch_frame
+                    && block_segment_count > 2_000_000
+                {
+                    block_segment_count.div_ceil(2_000_000)
+                        .min(32)
+                        .max(1) as usize
+                } else {
+                    1
+                };
+                for (batch_index, wire) in self.gpu_block_wires.iter().enumerate() {
+                    if batch_index % navigation_block_stride != 0
+                        || wire.instance_count == 0
+                        || (!show_3d_edges && wire.is_3d_mesh_edge)
+                    {
                         continue;
                     }
                     let use_black = want_solid_with_edges && wire.is_3d_mesh_edge;
