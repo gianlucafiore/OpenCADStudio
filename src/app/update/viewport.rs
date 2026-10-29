@@ -1050,14 +1050,17 @@ impl OpenCADStudio {
         };
         let mut timing = BoxSelectTiming::default();
         let t_sel = crate::perf::enabled().then(Instant::now);
-        let area_candidates = self.tabs[i].scene.interaction_candidates_in_aabb(
-            all_wires,
-            world_aabb,
-            [a.x.min(p.x), a.y.min(p.y), a.x.max(p.x), a.y.max(p.y)],
-            view_rot,
-            eye,
-            bounds,
-        );
+        let (area_candidates, contained_hits) = self.tabs[i]
+            .scene
+            .crossing_box_candidates_with_contained_hits(
+                all_wires,
+                world_aabb,
+                [a.x.min(p.x), a.y.min(p.y), a.x.max(p.x), a.y.max(p.y)],
+                view_rot,
+                eye,
+                bounds,
+                crossing,
+            );
         timing.candidates = elapsed(t_sel);
         let t_hit = crate::perf::enabled().then(Instant::now);
         let scene = &self.tabs[i].scene;
@@ -1068,6 +1071,7 @@ impl OpenCADStudio {
                 .into_iter()
                 .filter_map(|s| Scene::handle_from_wire_name(s))
                 .collect();
+        handles.extend(contained_hits);
         timing.wires = elapsed(t_hit);
         handles.extend(scene::pick::hit_test::box_hit_hatch(
             a,
