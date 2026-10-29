@@ -3843,3 +3843,40 @@ mod image_definition_graph_tests {
         }
     }
 }
+
+
+#[cfg(test)]
+mod wipeout_mass_scene_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn empty_wipeout_source_skips_expanded_insert_scene() {
+        use codec::entities::Insert;
+        use codec::types::Vector3;
+
+        let mut scene = Scene::new();
+        for i in 0..2_048 {
+            scene.add_entity(EntityType::Insert(Insert::new(
+                "REPEATED_NO_WIPEOUT",
+                Vector3::new(i as f64, 0.0, 0.0),
+            )));
+        }
+        let root = scene.model_space_block_handle();
+        let empty = scene.wipeout_models_for_block_graph(
+            root, None, None, true, scene.bg_color, false, false, None,
+        );
+        assert!(empty.is_empty());
+        // A mass edit must not make WIPEOUT discovery traverse 2k INSERTs.
+        let handles: Vec<_> = scene.document.entities()
+            .filter_map(|entity| matches!(entity, EntityType::Insert(_))
+                .then_some(entity.common().handle))
+            .collect();
+        scene.bump_entities(
+            &handles.into_iter().map(|h| (h, ChangeKind::Modified)).collect::<Vec<_>>(),
+        );
+        let after = scene.wipeout_models_for_block_graph(
+            root, None, None, true, scene.bg_color, false, false, None,
+        );
+        assert!(after.is_empty());
+    }
+}
