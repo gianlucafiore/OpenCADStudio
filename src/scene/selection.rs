@@ -1675,6 +1675,78 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual 50k-entity stress run; creates and transforms real scene geometry"]
+    fn stress_50k_lines_select_and_transform_without_losing_entities() {
+        use crate::command::EntityTransform;
+        use codec::entities::Line;
+        use codec::types::Vector3;
+
+        let mut scene = Scene::new();
+        let handles: Vec<Handle> = (0..50_000)
+            .map(|i| {
+                let x = (i % 500) as f64 * 2.0;
+                let y = (i / 500) as f64 * 2.0;
+                scene.add_entity(EntityType::Line(Line::from_points(
+                    Vector3::new(x, y, 0.0),
+                    Vector3::new(x + 1.0, y + 1.0, 0.0),
+                )))
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        scene.select_entities(&handles);
+        assert_eq!(scene.selected.len(), handles.len());
+        let _ = scene.selected_handles_in_order();
+        let _ = scene.selected_handles_in_order();
+        eprintln!("50k select + ordered snapshot: {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let _ = scene.entity_wires();
+        let before = scene.wire_models_for(&handles);
+        assert!(!before.is_empty());
+        eprintln!("50k resident warmup + source preview: {:?}", t.elapsed());
+
+        for (name, transform) in [
+            (
+                "MOVE",
+                EntityTransform::Translate(glam::DVec3::new(5.0, 3.0, 0.0)),
+            ),
+            (
+                "ROTATE",
+                EntityTransform::Rotate {
+                    center: glam::DVec3::ZERO,
+                    axis: glam::DVec3::Z,
+                    angle_rad: 0.1,
+                },
+            ),
+            (
+                "SCALE",
+                EntityTransform::Scale {
+                    center: glam::DVec3::ZERO,
+                    factor: 1.02,
+                },
+            ),
+            (
+                "MIRROR",
+                EntityTransform::Mirror {
+                    p1: glam::DVec3::ZERO,
+                    p2: glam::DVec3::X,
+                    working_normal: glam::DVec3::Z,
+                },
+            ),
+        ] {
+            let t = std::time::Instant::now();
+            scene.transform_entities(&handles, &transform);
+            eprintln!("50k {name} commit: {:?}", t.elapsed());
+            assert_eq!(scene.selected.len(), handles.len());
+            for &handle in &handles {
+                assert!(scene.document.get_entity(handle).is_some());
+            }
+        }
+        let _ = scene.entity_wires();
+        assert_eq!(scene.selected.len(), 50_000);
+    }
+
+    #[test]
     fn large_selection_order_tracks_bulk_add_remove_without_duplicate_rebuild() {
         let mut scene = Scene::new();
         let handles: Vec<Handle> = (1..=50_000).map(Handle::new).collect();
