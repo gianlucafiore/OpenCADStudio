@@ -2166,7 +2166,8 @@ mod block_wire_storage_tests {
     /// placements, while visually different placements must not alias.
     #[test]
     fn pooled_block_placements_require_identical_sources_and_offsets() {
-        use super::{block_placement_inputs_equal, BlockRef, RenderInstance, WireModel};
+        use super::{block_placement_inputs_equal, BlockRef, WireModel};
+        use crate::scene::model::instance_model::RenderInstance;
 
         let make = |name: &str, x: f64| WireModel {
             name: name.into(),
