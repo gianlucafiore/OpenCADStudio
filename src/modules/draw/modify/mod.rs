@@ -92,6 +92,18 @@ pub(super) fn mass_preview_extent(
     ))
 }
 
+/// Cap the number of array destinations visited by the transient preview.
+/// Large arrays still commit ALL destinations, independently of this stride.
+pub(super) fn mass_array_copy_stride(wires: usize, copies: usize) -> usize {
+    if wires.saturating_mul(copies) <= 8_192
+        || std::env::var_os("OCS_FULL_MASS_PREVIEW").is_some()
+    {
+        1
+    } else {
+        copies.div_ceil(128).max(1)
+    }
+}
+
 /// ARRAY can multiply one selection into thousands of preview copies.
 pub(super) fn mass_array_preview_stride(wires: usize, copies: usize) -> usize {
     let total = wires.saturating_mul(copies);
@@ -104,7 +116,16 @@ pub(super) fn mass_array_preview_stride(wires: usize, copies: usize) -> usize {
 
 #[cfg(test)]
 mod mass_preview_tests {
-    use super::{mass_array_preview_stride, mass_preview_stride};
+    use super::{mass_array_copy_stride, mass_array_preview_stride, mass_preview_stride};
+
+    #[test]
+    fn mass_array_copy_count_is_bounded() {
+        let copy_stride = mass_array_copy_stride(54_433, 3_000);
+        let copies = 3_000usize.div_ceil(copy_stride);
+        assert!(copies <= 128);
+        let wire_stride = mass_array_preview_stride(54_433, copies);
+        assert!(copies * 54_433usize.div_ceil(wire_stride) <= 2_048);
+    }
 
     #[test]
     fn massive_array_preview_budget_accounts_for_all_copies() {
