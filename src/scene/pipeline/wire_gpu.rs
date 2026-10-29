@@ -2115,9 +2115,7 @@ mod block_wire_storage_tests {
     /// placements, while visually different placements must not alias.
     #[test]
     fn repeated_block_placements_reuse_one_instance_stream() {
-        use super::{
-            instance_run_hash, BlockArenaChunk, BlockWireInstance,
-        };
+        use super::{instance_run_hash, BlockArenaChunk, BlockWireInstance};
         let run = vec![
             BlockWireInstance {
                 translation: [1.0, 2.0, 3.0],
