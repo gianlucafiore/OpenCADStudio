@@ -57,6 +57,7 @@ enum Step {
 pub struct ScaleCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    mass_outline: Option<WireModel>,
     step: Step,
     default_factor: f64,
 }
@@ -65,6 +66,7 @@ impl ScaleCommand {
     pub fn new(handles: Vec<Handle>, wire_models: Vec<WireModel>) -> Self {
         Self {
             handles,
+            mass_outline: super::mass_preview_extent(&wire_models),
             wire_models,
             step: Step::Base,
             default_factor: defaults::get_scale_factor(),
@@ -236,7 +238,7 @@ impl CadCommand for ScaleCommand {
             .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.scaled(base.as_vec3(), factor))
             .collect();
-        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+        if let Some(extent) = &self.mass_outline {
             out.push(extent.scaled(base.as_vec3(), factor));
         }
         out.push(WireModel::solid(
