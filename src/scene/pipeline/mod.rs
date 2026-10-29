@@ -2891,6 +2891,17 @@ impl Pipeline {
         (circles, ellipses, regular, blocks)
     }
 
+    /// Bound synchronous selection *visualization* work in scenes with
+    /// thousands of INSERTs. The logical selection and all edit operations
+    /// still retain every selected handle. Small selections are unchanged.
+    fn mass_highlight_stride(count: usize) -> usize {
+        if count <= 8_192 || std::env::var_os("OCS_FULL_MASS_HIGHLIGHT").is_some() {
+            1
+        } else {
+            count.div_ceil(2_048)
+        }
+    }
+
     pub fn upload_selected_wires(
         &mut self,
         device: &wgpu::Device,
@@ -2914,7 +2925,65 @@ impl Pipeline {
         // O(highlighted), no per-wire string parse or deep geometry clone.
         let mut selected_wires: Vec<&WireModel> = Vec::new();
         let mut hover_wires: Vec<&WireModel> = Vec::new();
-        for h in selected {
+        let highlight_stride = Self::mass_highlight_stride(selected.len());
+        // Stable, evenly distributed sample of selected handles. Rendering
+        // only this temporary xray is intentional: model geometry, selection,
+        // grips, commands, undo and saving still use the complete handle set.
+        let mut preview_handles: Vec<_> = selected.iter().copied().collect();
+        if highlight_stride > 1 {
+            preview_handles.sort_unstable_by_key(codec::Handle::value);
+        }
+        // The overall outline shows exactly what is selected even when the
+        // individual blue wire xray has an interactive mass-scene budget.
+        let selection_extent = if highlight_stride > 1 {
+            let mut bounds = [
+                f64::INFINITY, f64::INFINITY,
+                f64::NEG_INFINITY, f64::NEG_INFINITY,
+            ];
+            for h in selected {
+                if let Some(indices) = self.wire_handle_index.get(&h.value()) {
+                    for &index in indices {
+                        if let Some(wire) = wires.get(index as usize) {
+                            let bb = wire.aabb;
+                            if bb.iter().all(|coordinate| coordinate.is_finite())
+                                && bb[0] <= bb[2] && bb[1] <= bb[3]
+                            {
+                                bounds[0] = bounds[0].min(bb[0] as f64);
+                                bounds[1] = bounds[1].min(bb[1] as f64);
+                                bounds[2] = bounds[2].max(bb[2] as f64);
+                                bounds[3] = bounds[3].max(bb[3] as f64);
+                            }
+                        }
+                    }
+                }
+            }
+            if bounds.iter().all(|coordinate| coordinate.is_finite()) {
+                let [x0, y0, x1, y1] = bounds;
+                Some(WireModel::solid_f64(
+                    "__mass_selected_extent__".into(),
+                    vec![
+                        [x0, y0, 0.0], [x1, y0, 0.0],
+                        [x1, y1, 0.0], [x0, y1, 0.0],
+                        [x0, y0, 0.0],
+                    ],
+                    selected_tint.unwrap_or(WireModel::SELECTED),
+                    true,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if highlight_stride > 1 && crate::perf::enabled() {
+            crate::perf_record!(
+                "[perf] mass-highlight-lod handles={} sample={} stride={}",
+                selected.len(),
+                preview_handles.len().div_ceil(highlight_stride),
+                highlight_stride,
+            );
+        }
+        for h in preview_handles.iter().step_by(highlight_stride) {
             if let Some(idxs) = self.wire_handle_index.get(&h.value()) {
                 debug_assert!(
                     idxs.windows(2).all(|pair| pair[0] <= pair[1]),
@@ -2957,12 +3026,15 @@ impl Pipeline {
             }
         }
         let t_gather = perf_started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-        let (mut selected_circles, mut selected_ellipses, selected_regular, selected_blocks) =
+        let (mut selected_circles, mut selected_ellipses, mut selected_regular, selected_blocks) =
             Self::classify_highlight_wires(
                 &selected_wires,
                 Some(selected_tint.unwrap_or(WireModel::SELECTED)),
                 depth_map,
             );
+        if let Some(ref outline) = selection_extent {
+            selected_regular.push(outline);
+        }
         let (hover_circles, hover_ellipses, hover_regular, hover_blocks) =
             Self::classify_highlight_wires(&hover_wires, Some(WireModel::HOVER), depth_map);
         selected_circles.extend(hover_circles);
