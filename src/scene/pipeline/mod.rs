@@ -5201,11 +5201,35 @@ analytic={:.1} regular={:.1} blocks={:.1}",
             let occluded = hidden_line || !mesh_wireframe;
             let have_text_highlight =
                 (!self.text_highlight_gpu.is_empty()) || !self.block_text_highlight_gpu.is_empty();
-            if !self.gpu_selected_wires.is_empty()
-                || !self.gpu_selected_block_wires.is_empty()
-                || !self.gpu_selected_circles.is_empty()
-                || !self.gpu_selected_ellipses.is_empty()
-                || have_text_highlight
+            // During continuous pan/zoom the resident drawing remains
+            // visible. Replaying millions of *duplicate* blue overlay
+            // segments is the bottleneck on integrated GPUs (0.5–1 s/frame).
+            // Defer only the expensive xray overlay until navigation settles:
+            // the original geometry and the actual selected set are unchanged.
+            // skip_hatch_frame already marks the navigation LOD and its
+            // transition invalidates the rendered-scene cache.
+            let highlighted_segments: u64 = self
+                .gpu_selected_block_wires
+                .iter()
+                .map(|batch| {
+                    u64::from(batch.vertex_count / 6)
+                        * u64::from(batch.instance_count)
+                })
+                .sum::<u64>()
+                .saturating_add(
+                    self.gpu_selected_wires
+                        .iter()
+                        .map(|batch| u64::from(batch.instance_count))
+                        .sum::<u64>(),
+                );
+            let defer_mass_highlight =
+                self.skip_hatch_frame && highlighted_segments > 80_000;
+            if !defer_mass_highlight
+                && (!self.gpu_selected_wires.is_empty()
+                    || !self.gpu_selected_block_wires.is_empty()
+                    || !self.gpu_selected_circles.is_empty()
+                    || !self.gpu_selected_ellipses.is_empty()
+                    || have_text_highlight)
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("selection_xray.render_pass"),
