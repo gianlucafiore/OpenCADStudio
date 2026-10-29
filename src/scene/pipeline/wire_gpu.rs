@@ -1251,6 +1251,13 @@ impl BlockWireGpu {
         // Records emitted this call, so a cache that is earning its keep is
         // visible rather than assumed.
         let mut emitted_segments = 0usize;
+        // Repeated INSERTs draw many distinct source segments with the same
+        // placement stream. Pool the CPU stream too: GPU arena deduplication
+        // alone still computed 42 million placements on every highlight.
+        // Bound retained snapshots: unrelated groups must never create an
+        // unbounded second copy of the selection.
+        let mut placement_memos: Vec<BlockPlacementMemo<'_>> = Vec::new();
+        let mut reused_placement_groups = 0usize;
         for (mesh_edge, group) in groups {
             // A copy reached through a stub carries the prototype's
             // geometry at the prototype's placement, which is what `base`
@@ -1312,13 +1319,35 @@ impl BlockWireGpu {
             // segment and every INSERT. If nested stubs vary their local
             // offsets between copies, retain the original per-wire depths.
             let shared_depth_offset = block_shared_depth_offset(&group, mesh_edge);
-            let instances = block_instances(
-                &group,
-                base,
-                mesh_edge,
-                depth_map,
-                shared_depth_offset.is_some(),
-            );
+            let shared_parent_depth = shared_depth_offset.is_some();
+            let cached = shared_parent_depth.then(|| {
+                placement_memos.iter().find(|memo| {
+                    memo.mesh_edge == mesh_edge
+                        && memo.base_translation == base.translation.map(f64::to_bits)
+                        && block_placement_inputs_equal(&group, &memo.group)
+                })
+            }).flatten();
+            let instances = if let Some(memo) = cached {
+                reused_placement_groups += 1;
+                std::sync::Arc::clone(&memo.instances)
+            } else {
+                let computed = std::sync::Arc::new(block_instances(
+                    &group,
+                    base,
+                    mesh_edge,
+                    depth_map,
+                    shared_parent_depth,
+                ));
+                if shared_parent_depth && placement_memos.len() < 8 && group.len() >= 128 {
+                    placement_memos.push(BlockPlacementMemo {
+                        base_translation: base.translation.map(f64::to_bits),
+                        mesh_edge,
+                        group: group.clone(),
+                        instances: std::sync::Arc::clone(&computed),
+                    });
+                }
+                computed
+            };
             if instances.is_empty() {
                 continue;
             }
@@ -1337,7 +1366,7 @@ impl BlockWireGpu {
         if crate::perf::enabled() && arena.segments > 0 {
             crate::perf_record!(
                 "[perf] block-wire-geometry mode={} definitions={} arenas={} batches={} \
-segments={} bytes={} bytes_if_per_definition={} emitted={} requested_placements={} uploaded_placements={}",
+segments={} bytes={} bytes_if_per_definition={} emitted={} requested_placements={} uploaded_placements={} reused_placement_groups={}",
                 if mode.uses_storage() {
                     "storage"
                 } else {
@@ -1352,6 +1381,7 @@ segments={} bytes={} bytes_if_per_definition={} emitted={} requested_placements=
                 emitted_segments,
                 arena.requested_placements,
                 arena.uploaded_placements,
+                reused_placement_groups,
             );
         }
         out
@@ -1376,6 +1406,7 @@ struct BlockArenaBuilder {
     bytes: u64,
     requested_placements: usize,
     uploaded_placements: usize,
+    instance_hash_memo: rustc_hash::FxHashMap<(usize, usize), u64>,
 }
 
 #[derive(Default)]
@@ -1409,6 +1440,27 @@ fn instance_run_hash(run: &[BlockWireInstance]) -> u64 {
     hash.write_usize(run.len());
     hash.write(bytemuck::cast_slice(run));
     hash.finish()
+}
+
+/// Host placement stream shared by multiple block-segment definitions.
+/// Members use the same INSERT handle, relative translation and stub delta,
+/// so their per-instance translation and parent draw depth are identical.
+/// Segment-specific depth remains in the GPU uniform, not in this stream.
+struct BlockPlacementMemo<'a> {
+    base_translation: [u64; 3],
+    mesh_edge: bool,
+    group: Vec<BlockRef<'a>>,
+    instances: std::sync::Arc<Vec<BlockWireInstance>>,
+}
+
+fn block_placement_inputs_equal(a: &[BlockRef<'_>], b: &[BlockRef<'_>]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(left, right)| {
+            left.named().name == right.named().name
+                && left.delta.map(f64::to_bits) == right.delta.map(f64::to_bits)
+                && left.wire.render_instance.map(|x| x.translation.map(f64::to_bits))
+                    == right.wire.render_instance.map(|x| x.translation.map(f64::to_bits))
+        })
 }
 
 /// One definition's slice of an arena, waiting for the arena's buffers.
@@ -1446,6 +1498,7 @@ impl BlockArenaBuilder {
             bytes: 0,
             requested_placements: 0,
             uploaded_placements: 0,
+            instance_hash_memo: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -1463,7 +1516,11 @@ impl BlockArenaBuilder {
         // definition too large for one arena is split into pieces that each
         // carry their own copy of the constants.
         for run in instances.chunks(self.max_instances) {
-            let run_hash = instance_run_hash(run);
+            let key = (run.as_ptr() as usize, run.len());
+            let run_hash = *self
+                .instance_hash_memo
+                .entry(key)
+                .or_insert_with(|| instance_run_hash(run));
             let mut placed = 0usize;
             while placed < geometry.records.len() {
                 let index = self.chunk_with_room(run, run_hash);
