@@ -190,7 +190,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, in: VertexIn) -> VertexOut 
         let pos_rel = mix(rel_a, rel_b, which_end);
         let world_pos = pos_rel + perp_world * (eff_hw * side) + world_dir * along;
         var clip_pos = u.view_rot * vec4<f32>(world_pos, 1.0);
-        clip_pos = apply_draw_order(clip_pos, in.depth.x);
+        clip_pos = apply_draw_order(clip_pos, in.depth.x + in.depth.y * wire_const.draw_depth);
 
         final_clip = clip_pos;
         out_dist = mix(in.distances.x, in.distances.y, which_end) + along * (in.distances.y - in.distances.x) / max(world_len, 1e-6);
@@ -217,7 +217,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, in: VertexIn) -> VertexOut 
             + direction * half_width * extension;
         let ndc_offset = offset_px / (u.viewport_size * 0.5);
         var clip_pos_out = clip_position + vec4<f32>(ndc_offset * clip_position.w, 0.0, 0.0);
-        clip_pos_out = apply_draw_order(clip_pos_out, in.depth.x);
+        clip_pos_out = apply_draw_order(clip_pos_out, in.depth.x + in.depth.y * wire_const.draw_depth);
 
         final_clip = clip_pos_out;
         out_dist = mix(in.distances.x, in.distances.y, which_end)
