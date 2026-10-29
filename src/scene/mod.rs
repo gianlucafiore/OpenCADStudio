@@ -2690,6 +2690,9 @@ pub struct Scene {
     /// resident hatch set. The rendered preview cache retains the source Arcs
     /// so pointer identity is ABA-safe when command/grip previews change.
     selected_hatch_overlay_cache: RefCell<Option<(u64, u64, Arc<Vec<HatchModel>>)>>,
+    /// Whether any source Hatch exists, including within block definitions.
+    /// Selection never invalidates this; geometry_epoch does.
+    hatch_source_presence_cache: std::cell::Cell<Option<(u64, bool)>>,
     combined_preview_hatch_cache: RefCell<
         Option<(
             Arc<Vec<HatchModel>>,
@@ -3264,6 +3267,7 @@ impl Scene {
             no_draw_depths: Arc::new(HashMap::default()),
             hatch_cache: RefCell::new(HashMap::default()),
             selected_hatch_overlay_cache: RefCell::new(None),
+            hatch_source_presence_cache: std::cell::Cell::new(None),
             combined_preview_hatch_cache: RefCell::new(None),
             wipeout_cache: RefCell::new(HashMap::default()),
             image_cache: RefCell::new(HashMap::default()),
