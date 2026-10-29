@@ -20,13 +20,12 @@ Optimizar edición de 5.000, 20.000 y 50.000 entidades sin una segunda vía de r
 ## Preparación para probar en Linux
 
 ```bash
-cd ~/Escritorio/OCS/OpenCADStudio-HatchTest
+cd ~/Escritorio/OCS/OpenCADStudio
 git status -sb
 git remote -v
 git fetch origin
 git switch perf/cached-mass-objects || git switch -c perf/cached-mass-objects --track origin/perf/cached-mass-objects
 git pull --ff-only origin perf/cached-mass-objects
-cargo fmt --all -- --check
 cargo check
 cargo test --lib large_selection_order_tracks_bulk_add_remove_without_duplicate_rebuild -- --nocapture
 cargo test --lib selection_order_snapshot_invalidates_on_changes_but_not_hover -- --nocapture
@@ -58,3 +57,56 @@ Medir por operación: (1) tiempo hasta primera previsualización, (2) latencia c
 3. Cachés reutilizadas únicamente con identificador de contexto y generación válidos.
 4. Medición con archivo representativo y perfiles CPU/GPU. No declarar la meta de 50.000 objetos conseguida hasta pasar la matriz.
 5. No reintroducir preview rasterizada. La siguiente etapa de rendimiento real exige estudiar transformaciones GPU/instancias de geometría de previsualización sin tessellate/clone/upload en cada pixel del cursor.
+
+## Optimización integrada del 29/10: navegación, selección y comandos
+
+- La caché GPU de bloques ya reutiliza las posiciones de INSERT; se agregó una
+  caché **CPU por operación** que evita recalcular esas posiciones para cientos
+  de segmentos de una misma definición. `reused_placement_groups` permite
+  comprobar cuántos grupos reutilizaron ese vector.
+- Durante PAN/ZOOM y previews interactivas de escenas masivas, el renderizador
+  usa **LOD transitorio** (muestra distribuida de segmentos de bloque y omite
+  superposición azul duplicada). La selección y geometría reales permanecen
+  íntegras y al detener PAN/ZOOM se dibuja la geometría completa.
+- MOVE/COPY/ROTATE/SCALE/MIRROR usan una muestra geométrica de hasta 2.048 wires
+  y un marco de la selección completa en las operaciones gigantes. ARRAY
+  también limita el total conjunto de posiciones y wires mostrados. **Es una
+  previsualización parcial intencional**, no una selección parcial: commit,
+  guardar, undo y transformaciones afectan el conjunto completo.
+- Para comparar con previews antiguas sin muestreo se puede lanzar
+  `OCS_FULL_MASS_PREVIEW=1 PERF=1 ./target/release/OpenCADStudio`.
+  No es recomendable para una sesión de 50.000 objetos.
+
+### Validación conjunta después de bajar cambios
+
+```bash
+cargo test --lib pooled_block_placements_require_identical_sources_and_offsets -- --nocapture
+cargo test --lib repeated_block_placements_reuse_one_instance_stream -- --nocapture
+cargo test --lib massive_wire_preview_is_bounded_without_affecting_small_edits -- --nocapture
+cargo test --lib massive_array_preview_budget_accounts_for_all_copies -- --nocapture
+cargo test --lib mass_array_copy_count_is_bounded -- --nocapture
+cargo test --lib mass_move_preview_is_bounded_but_commit_keeps_every_handle -- --nocapture
+cargo test --lib hatch_free_insert_selection_does_not_walk_the_hatch_graph -- --nocapture
+cargo test --lib stress_50k_lines_select_and_transform_without_losing_entities -- --ignored --nocapture
+cargo build --release
+PERF=1 ./target/release/OpenCADStudio 2>&1 | tee ~/ocs-perf-cache-integral.log
+```
+
+### Verificación visual antes de considerar cerrado
+
+1. Abrir `test plantas.dwg`, seleccionar 54.433 INSERT por caja cruzada,
+   panear y hacer zoom. Durante el movimiento la geometría puede verse
+   simplificada; al detenerse debe reaparecer COMPLETA y correctamente resaltada.
+2. Ejecutar MOVE/COPY/ROTATE/SCALE/MIRROR con 54k INSERT; mover cursor,
+   confirmar, hacer UNDO/REDO y verificar todas las copias, hatch y posición final.
+3. ARRAY rectangular/polar/por recorrido con selección grande; el preview es
+   representativo, **la geometría final debe contener todas las copias**.
+4. Repetir con 50k líneas, bloques mixtos con hatch, OSNAP/OTRACK, y comparar
+   latencia con selección vacía. Guardar, cerrar y reabrir el DWG.
+5. Revisar especialmente `wire-highlight`, `nav-prepare`,
+   `command-preview-compute`, `input-to-render`, `block-wire-geometry` y
+   `gpu-live` para medir mejoras y detectar regresiones.
+
+**Estado:** cambios subidos; sin compilación o pruebas de interfaz ejecutadas
+en el entorno de GitHub disponible desde esta sesión. La aceptación requiere
+los tests y la inspección visual anteriores.
