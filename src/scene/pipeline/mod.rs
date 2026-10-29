@@ -54,6 +54,32 @@ use crate::scene::model::image_model::ImageModel;
 use crate::scene::model::mesh_model::MeshLodSet;
 use crate::scene::model::wire_model::WireModel;
 
+/// Interactive-only LOD for repeated INSERT geometry. Uses the existing
+/// compact resident buffers and skips complete source segment definitions,
+/// so no tessellation, instance uploads or cache invalidation are required.
+/// Full-quality draws always use stride 1.
+fn navigation_block_stride(segments: u64, batches: usize, active: bool) -> usize {
+    const BUDGET: u64 = 350_000;
+    if !active || segments <= BUDGET || batches <= 1 {
+        1
+    } else {
+        segments.div_ceil(BUDGET).min(batches as u64).max(1) as usize
+    }
+}
+
+#[cfg(test)]
+mod navigation_lod_tests {
+    use super::navigation_block_stride;
+
+    #[test]
+    fn hatch_free_42m_segment_drawing_uses_navigation_budget() {
+        assert_eq!(navigation_block_stride(42_021_504, 772, false), 1);
+        assert_eq!(navigation_block_stride(42_021_504, 772, true), 121);
+        assert_eq!(navigation_block_stride(10_000, 772, true), 1);
+        assert_eq!(navigation_block_stride(42_021_504, 1, true), 1);
+    }
+}
+
 /// Worst-case raster depth bias (in 24-bit quanta, toward the camera) block
 /// text is required to clear. The wipeout pipeline currently carries no bias
 /// (a raster bias can jump a block's narrow depth band and erase its
@@ -4956,20 +4982,14 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                     || !self.gpu_preview_block_wires.is_empty()
                     || !self.gpu_preview_circles.is_empty()
                     || !self.gpu_preview_ellipses.is_empty();
-                let navigation_block_stride = if (self.navigation_lod || live_ghost)
-                    && block_segment_count > 350_000
-                {
-                    // 772 segments × 54k INSERTs = 42M segment draws.
-                    // A previous cap of 32 still drew >=1.3M segments and
-                    // stalled Intel Vulkan for hundreds of milliseconds.
-                    // A large stride is safe here: only the navigation image
-                    // is simplified; the full resident buffers remain intact.
-                    block_segment_count.div_ceil(350_000)
-                        .min(self.gpu_block_wires.len() as u64)
-                        .max(1) as usize
-                } else {
-                    1
-                };
+                // 772 segments × 54k INSERTs = 42M segment draws.
+                // A previous cap of 32 still drew >=1.3M segments and
+                // stalled Intel Vulkan for hundreds of milliseconds.
+                let navigation_block_stride = navigation_block_stride(
+                    block_segment_count,
+                    self.gpu_block_wires.len(),
+                    self.navigation_lod || live_ghost,
+                );
                 if navigation_block_stride > 1 && crate::perf::enabled() {
                     crate::perf_record!(
                         "[perf] wire-nav-lod active={} preview={} segments={} stride={} batches={}",
