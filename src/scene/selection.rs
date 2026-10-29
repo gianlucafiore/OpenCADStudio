@@ -1789,6 +1789,24 @@ mod tests {
     }
 
     #[test]
+    fn hatch_free_insert_selection_does_not_walk_the_hatch_graph() {
+        let mut scene = Scene::new();
+        let insert = scene.add_entity(EntityType::Insert(codec::entities::Insert::new(
+            "UNDEFINED_BLOCK",
+            codec::types::Vector3::ZERO,
+        )));
+        scene.select_entity(insert, false);
+        assert!(!scene.drawing_contains_hatch_sources());
+        assert!(scene.selected_hatch_overlay_models().is_empty());
+        assert!(scene.preview_insert_hatch_models(&[insert]).is_empty());
+        assert_eq!(scene.selected.len(), 1);
+        assert_eq!(
+            scene.hatch_source_presence_cache.get(),
+            Some((scene.geometry_epoch, false))
+        );
+    }
+
+    #[test]
     fn selected_hatch_signature_cache_tracks_hatch_membership() {
         let mut scene = Scene::new();
         let line = scene.add_entity(EntityType::Line(codec::entities::Line::from_points(
