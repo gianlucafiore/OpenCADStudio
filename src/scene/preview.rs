@@ -357,21 +357,57 @@ impl Scene {
     }
 
     pub fn wire_models_for(&self, handles: &[codec::Handle]) -> Vec<WireModel> {
-        handles
-            .iter()
-            .flat_map(|h| {
-                match self.document.get_entity(*h) {
-                    // Hatches carry no outline in the normal wire set, but an
-                    // edit preview (move / copy / array / grip-drag) needs to
-                    // show the shape following the cursor. Build a live boundary
-                    // from the current HatchModel — `apply_grip` keeps it in
-                    // step, so the preview tracks a dragged grip in real time.
-                    Some(EntityType::Hatch(_)) => self.hatch_outline_wire(*h).into_iter().collect(),
-                    Some(e) => self.tessellate_one(e),
-                    None => Vec::new(),
+        // The live resident set is already tessellated and indexed per handle.
+        // MOVE/COPY/ROTATE/SCALE/MIRROR used to tessellate all selected sources
+        // again before the first cursor frame, even for 50k unchanged LINEs or
+        // repeated INSERTs. Reuse the resident memo only under its exact display
+        // guard, preserving the one-off fallback for hidden/grip-edited objects,
+        // paper-space projections and stale annotation/style contexts.
+        let resident_ok = if self.current_layout == "Model" {
+            let annotation_scale_handle = crate::scene::annotative::scale_handle_by_name(
+                &self.document,
+                &self.document.header.current_annotation_scale,
+            );
+            let guard = tess_memo_guard(
+                None,
+                self.annotation_scale,
+                annotation_scale_handle,
+                self.annotation_all_visible(),
+                self.bg_color,
+                self.active_viewport,
+            ) ^ if self.constraint_shading_active() {
+                0xC057_A705_0000_0001
+            } else {
+                0
+            };
+            self.resident_tess_guard.get() == guard
+        } else {
+            false
+        };
+        let mut out = Vec::new();
+        for &handle in handles {
+            match self.document.get_entity(handle) {
+                // A hatch's boundary follows the current model, including a
+                // live grip edit. Its fill remains on the separate hatch path.
+                Some(EntityType::Hatch(_)) => {
+                    out.extend(self.hatch_outline_wire(handle));
                 }
-            })
-            .collect()
+                Some(entity) => {
+                    let hit = resident_ok.then(|| {
+                        let memo = self.resident_tess_memo.borrow();
+                        let run = memo.get(&handle)?;
+                        self.resolve_memo_run(handle, run)
+                    }).flatten();
+                    if let Some(hit) = hit {
+                        out.extend_from_slice(hit.wires());
+                    } else {
+                        out.extend(self.tessellate_one(entity));
+                    }
+                }
+                None => {}
+            }
+        }
+        out
     }
 
     /// Current candidate geometry for a hot grip. Solid-history candidates
@@ -618,6 +654,24 @@ mod tests {
     use codec::entities::Line;
     use codec::types::Vector3;
     use codec::EntityType;
+
+    #[test]
+    fn edit_preview_reuses_resident_compatible_wire_geometry() {
+        let mut scene = Scene::new();
+        let h = scene.add_entity(EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(12.0, 5.0, 0.0),
+        )));
+        let expected = scene.wire_models_for(&[h]);
+        // Warm the render's memo and then request the edit preview again.
+        let _ = scene.entity_wires();
+        let actual = scene.wire_models_for(&[h]);
+        assert_eq!(actual.len(), expected.len());
+        for (cached, original) in actual.iter().zip(&expected) {
+            assert_eq!(cached.name, original.name);
+            assert_eq!(cached.points, original.points);
+        }
+    }
 
     #[test]
     fn block_preview_wires_tessellates_block_entities() {
