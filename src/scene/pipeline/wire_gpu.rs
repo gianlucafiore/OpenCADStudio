@@ -1320,16 +1320,23 @@ impl BlockWireGpu {
             // offsets between copies, retain the original per-wire depths.
             let shared_depth_offset = block_shared_depth_offset(&group, mesh_edge);
             let shared_parent_depth = shared_depth_offset.is_some();
-            let cached = shared_parent_depth.then(|| {
-                placement_memos.iter().find(|memo| {
-                    memo.mesh_edge == mesh_edge
-                        && memo.base_translation == base.translation.map(f64::to_bits)
-                        && block_placement_inputs_equal(&group, &memo.group)
+            let cached = shared_parent_depth
+                .then(|| {
+                    placement_memos.iter().enumerate().find(|(_, memo)| {
+                        memo.mesh_edge == mesh_edge
+                            && memo.base_translation == base.translation.map(f64::to_bits)
+                            && block_placement_inputs_equal(&group, &memo.group)
+                    })
                 })
-            }).flatten();
-            let instances = if let Some(memo) = cached {
+                .flatten();
+            // An id names a memo entry retained for the *entire* upload.
+            // Identical ids have byte-identical placement streams, including
+            // every split chunk. The arena may alias them by id rather than
+            // hashing and memcmp-ing 54k instances for every one of 772
+            // independently coloured source segments.
+            let (instances, placement_id) = if let Some((id, memo)) = cached {
                 reused_placement_groups += 1;
-                std::sync::Arc::clone(&memo.instances)
+                (std::sync::Arc::clone(&memo.instances), Some(id))
             } else {
                 let computed = std::sync::Arc::new(block_instances(
                     &group,
@@ -1339,14 +1346,17 @@ impl BlockWireGpu {
                     shared_parent_depth,
                 ));
                 if shared_parent_depth && placement_memos.len() < 8 && group.len() >= 128 {
+                    let id = placement_memos.len();
                     placement_memos.push(BlockPlacementMemo {
                         base_translation: base.translation.map(f64::to_bits),
                         mesh_edge,
                         group: group.clone(),
                         instances: std::sync::Arc::clone(&computed),
                     });
+                    (computed, Some(id))
+                } else {
+                    (computed, None)
                 }
-                computed
             };
             if instances.is_empty() {
                 continue;
@@ -1356,6 +1366,7 @@ impl BlockWireGpu {
                 &instances,
                 mesh_edge,
                 shared_depth_offset.unwrap_or(0.0),
+                placement_id,
             );
         }
         // Release geometry that this build no longer uses.
@@ -1417,6 +1428,9 @@ struct BlockArenaChunk {
     /// Multiple block segments can draw different geometry from the same
     /// instance-buffer range; the vertex shader supplies their own constants.
     instance_runs: rustc_hash::FxHashMap<u64, Vec<(usize, usize)>>,
+    /// Upload-local identifiers for byte-identical, memoized instance runs.
+    /// The memo owns each underlying vector until every batch is uploaded.
+    memo_runs: rustc_hash::FxHashMap<(usize, usize), (usize, usize)>,
     batches: Vec<PendingBlockBatch>,
 }
 
@@ -1507,17 +1521,21 @@ impl BlockArenaBuilder {
         instances: &[BlockWireInstance],
         mesh_edge: bool,
         depth_offset: f32,
+        placement_id: Option<usize>,
     ) {
         self.segments += geometry.records.len();
         // A definition's geometry, constants and placements must land in the
         // same arena — one bind group and one instance buffer draw them — so a
         // definition too large for one arena is split into pieces that each
         // carry their own copy of the constants.
-        for run in instances.chunks(self.max_instances) {
-            let run_hash = instance_run_hash(run);
+        for (run_index, run) in instances.chunks(self.max_instances).enumerate() {
+            let memo_key = placement_id.map(|id| (id, run_index));
+            // Memoized groups have a stable, already-verified identity.
+            // Keep the content-hash fallback for all non-memoized groups.
+            let run_hash = memo_key.is_none().then(|| instance_run_hash(run));
             let mut placed = 0usize;
             while placed < geometry.records.len() {
-                let index = self.chunk_with_room(run, run_hash);
+                let index = self.chunk_with_room(run, run_hash, memo_key);
                 let chunk = &mut self.chunks[index];
                 let room = (self.max_verts - chunk.verts.len()) / self.per_segment;
                 let take = room.min(geometry.records.len() - placed);
@@ -1538,19 +1556,30 @@ impl BlockArenaBuilder {
                 constant.draw_depth = depth_offset;
                 chunk.consts.push(constant);
                 self.requested_placements += run.len();
-                let first_instance = if let Some(existing) =
-                    chunk.reused_instance_start(run, run_hash)
-                {
+                let already_uploaded = memo_key
+                    .and_then(|key| chunk.memo_runs.get(&key).copied())
+                    .map(|(start, len)| {
+                        debug_assert_eq!(len, run.len());
+                        start
+                    })
+                    .or_else(|| {
+                        run_hash.and_then(|hash| chunk.reused_instance_start(run, hash))
+                    });
+                let first_instance = if let Some(existing) = already_uploaded {
                     existing as u32
                 } else {
                     let start = chunk.instances.len();
                     self.uploaded_placements += run.len();
                     chunk.instances.extend_from_slice(run);
-                    chunk
-                        .instance_runs
-                        .entry(run_hash)
-                        .or_default()
-                        .push((start, run.len()));
+                    if let Some(key) = memo_key {
+                        chunk.memo_runs.insert(key, (start, run.len()));
+                    } else if let Some(hash) = run_hash {
+                        chunk
+                            .instance_runs
+                            .entry(hash)
+                            .or_default()
+                            .push((start, run.len()));
+                    }
                     start as u32
                 };
                 chunk.batches.push(PendingBlockBatch {
@@ -1570,11 +1599,19 @@ impl BlockArenaBuilder {
     /// The open arena when it has room for one more segment, one more set of
     /// constants and `instances` placements; a fresh one otherwise. `instances`
     /// never exceeds one arena's budget, so a fresh arena always has room.
-    fn chunk_with_room(&mut self, instances: &[BlockWireInstance], hash: u64) -> usize {
+    fn chunk_with_room(
+        &mut self,
+        instances: &[BlockWireInstance],
+        hash: Option<u64>,
+        memo_key: Option<(usize, usize)>,
+    ) -> usize {
         let fits = self.chunks.last().is_some_and(|chunk| {
             self.max_verts - chunk.verts.len() >= self.per_segment
                 && chunk.consts.len() < self.max_consts
-                && (chunk.reused_instance_start(instances, hash).is_some()
+                && (memo_key.is_some_and(|key| chunk.memo_runs.contains_key(&key))
+                    || hash.is_some_and(|hash| {
+                        chunk.reused_instance_start(instances, hash).is_some()
+                    })
                     || self.max_instances - chunk.instances.len() >= instances.len())
         });
         if !fits {
