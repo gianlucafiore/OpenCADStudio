@@ -1528,13 +1528,11 @@ impl OpenCADStudio {
         );
         self.last_pick = Some((handles.clone(), self.select_remove_mode));
         if self.select_remove_mode {
-            for h in &handles {
-                self.tabs[i].scene.deselect_entity(*h);
-            }
+            // Bulk subtraction compacts the 50k-entry order list only once.
+            self.tabs[i].scene.deselect_entities(&handles);
         } else {
-            for h in &handles {
-                self.tabs[i].scene.select_entity(*h, false);
-            }
+            // Avoid one highlight invalidation per selected candidate.
+            self.tabs[i].scene.select_entities(&handles);
             self.tabs[i].scene.expand_selection_for_groups(&handles);
         }
         self.refresh_properties();
@@ -1564,9 +1562,7 @@ impl OpenCADStudio {
     fn handle_relaunch(&mut self, cmd: String, handles: Vec<Handle>) -> Task<Message> {
         let i = self.active_tab;
         self.tabs[i].scene.deselect_all();
-        for h in &handles {
-            self.tabs[i].scene.select_entity(*h, false);
-        }
+        self.tabs[i].scene.select_entities(&handles);
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
