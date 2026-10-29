@@ -363,7 +363,11 @@ impl Scene {
         // repeated INSERTs. Reuse the resident memo only under its exact display
         // guard, preserving the one-off fallback for hidden/grip-edited objects,
         // paper-space projections and stale annotation/style contexts.
-        let resident_ok = if self.current_layout == "Model" {
+        let resident_ok = if self.current_layout == "Model"
+            && self.block_edit_block.is_none()
+            && self.refedit_keep.is_none()
+            && !self.block_visibility_reveal
+        {
             let annotation_scale_handle = crate::scene::annotative::scale_handle_by_name(
                 &self.document,
                 &self.document.header.current_annotation_scale,
