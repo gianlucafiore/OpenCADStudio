@@ -13645,22 +13645,15 @@ vis_index={:.1} visible_probe={:.1}",
             return false;
         }
 
-        // owner_handle is null (common in DXF files that omit group code 330).
-        // Use the current layout's entity_handles as the authoritative list when
-        // available — this prevents block-definition geometry from leaking into
-        // the viewport even when owner handles are missing.
-        if let Some(br) = self
-            .document
-            .block_records
-            .iter()
-            .find(|br| br.handle == block_handle)
-        {
-            if !br.entity_handles.is_empty() {
-                return br.entity_handles.contains(&entity_handle);
-            }
-        }
-
-        // P: epoch-cached reverse map replaces O(B) block_records scan.
+        // owner_handle is null (common in imported DXF/DWG files without
+        // group 330). Never search BlockRecord::entity_handles linearly here:
+        // the annotation/highlight render path can call this for tens of
+        // thousands of selected INSERTs after MOVE. A 55k-element .contains()
+        // per entity turns an otherwise incremental 13k-object edit into
+        // ~750 million comparisons (multi-second UI freeze).
+        //
+        // The epoch-cached reverse index contains exactly the same explicit
+        // block membership information. One lookup is O(1) amortized.
         let map = self.entity_block_map();
         if let Some(&owner) = map.get(&entity_handle) {
             return owner == block_handle;
