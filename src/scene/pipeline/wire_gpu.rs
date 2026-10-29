@@ -2164,6 +2164,19 @@ mod block_wire_storage_tests {
     }
 
     #[test]
+    fn both_block_wire_shaders_apply_the_shared_instance_depth_offset() {
+        for source in [
+            draw_order_shader!("block_wire.wgsl"),
+            draw_order_shader!("block_wire_storage.wgsl"),
+        ] {
+            assert!(
+                source.contains("in.depth.x + in.depth.y * wire_const.draw_depth"),
+                "block depth must preserve per-segment ordering when placements are shared",
+            );
+        }
+    }
+
+    #[test]
     fn both_block_wire_shaders_honor_fixed_screen_width() {
         for source in [
             draw_order_shader!("block_wire.wgsl"),
