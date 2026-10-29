@@ -4934,7 +4934,11 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                         )
                     },
                 );
-                let navigation_block_stride = if self.skip_hatch_frame
+                let live_ghost = !self.gpu_preview_wires.is_empty()
+                    || !self.gpu_preview_block_wires.is_empty()
+                    || !self.gpu_preview_circles.is_empty()
+                    || !self.gpu_preview_ellipses.is_empty();
+                let navigation_block_stride = if (self.skip_hatch_frame || live_ghost)
                     && block_segment_count > 2_000_000
                 {
                     block_segment_count.div_ceil(2_000_000)
@@ -5250,8 +5254,12 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                         .map(|batch| u64::from(batch.instance_count))
                         .sum::<u64>(),
                 );
+            let live_mass_edit = !self.gpu_preview_wires.is_empty()
+                || !self.gpu_preview_block_wires.is_empty()
+                || !self.gpu_preview_circles.is_empty()
+                || !self.gpu_preview_ellipses.is_empty();
             let defer_mass_highlight =
-                self.skip_hatch_frame && highlighted_segments > 80_000;
+                (self.skip_hatch_frame || live_mass_edit) && highlighted_segments > 80_000;
             if !defer_mass_highlight
                 && (!self.gpu_selected_wires.is_empty()
                     || !self.gpu_selected_block_wires.is_empty()
