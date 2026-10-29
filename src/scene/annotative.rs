@@ -1374,11 +1374,16 @@ pub fn transform_annotation_contexts(
     entity_handle: Handle,
     t: &crate::command::EntityTransform,
 ) -> bool {
+    // Most mass transformations affect plain INSERTs without an annotation
+    // context. Check the tiny xdictionary chain *before* cloning the entire
+    // source entity on every one of 50k handles.
+    let Some(collection) = annotation_scales_dict(doc, entity_handle) else {
+        return false;
+    };
     let Some(base_entity) = doc.get_entity(entity_handle).cloned() else {
         return false;
     };
-    let leaves: Vec<_> = annotation_scales_dict(doc, entity_handle)
-        .and_then(|collection| as_dict(doc, collection))
+    let leaves: Vec<_> = as_dict(doc, collection)
         .map(|collection| {
             collection
                 .entries
