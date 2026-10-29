@@ -4709,6 +4709,7 @@ impl Scene {
         show_interaction: bool,
         force_rasterize: bool,
     ) -> Option<ViewportData> {
+        let viewport_profile = crate::perf::enabled().then(iced::time::Instant::now);
         let display = self.viewport_display_settings(inst);
         let mut flags = render_mode_flags(inst.render_mode);
         if let Some(style) = display.visual_style.as_ref() {
@@ -4767,9 +4768,11 @@ impl Scene {
             self.model_wires_for_viewport_arc(inst.handle, full.height)
         };
         let source_gen = self.last_model_wire_gen.get();
+        let base_ms = crate::perf::elapsed_ms(viewport_profile);
         let styled_fill_source = Arc::clone(&base_arc);
         let (base_arc, styled_gen) = self.display_styled_wires(base_arc, source_gen);
         self.last_model_wire_gen.set(styled_gen);
+        let styled_ms = crate::perf::elapsed_ms(viewport_profile) - base_ms;
         // Wire-buffer content id for the upload gate. Preview / interim wires
         // are NOT part of this buffer anymore (they go in a separate per-frame
         // overlay buffer below), so the base id is the source's stable content
@@ -4846,6 +4849,7 @@ impl Scene {
                 .or_insert_with(|| (fa.clone(), oa.clone()));
             (fa, oa.unwrap_or_else(|| Arc::clone(&base_arc)))
         };
+        let split_ms = crate::perf::elapsed_ms(viewport_profile) - base_ms - styled_ms;
         // Base wire set — the cached `other` Arc directly, never cloned to
         // append overlays. Preview / interim wires ride in their own small
         // per-frame buffer so the (potentially huge) base buffer stays resident
@@ -4877,11 +4881,13 @@ impl Scene {
             } else {
                 inst.paper_sheet
             };
+        let annotation_started = iced::time::Instant::now();
         let annotation_context_wires = if show_live_overlay {
             self.annotation_context_highlight_wires(inst)
         } else {
             Arc::new(Vec::new())
         };
+        let annotation_ms = annotation_started.elapsed().as_secs_f64() * 1000.0;
         // 2D wireframe draws no cloud points; the clouds show their extents
         // and a message there instead (drawn with the live overlays).
         let wireframe_2d = inst.render_mode == codec::entities::ViewportRenderMode::Wireframe2D;
@@ -5090,6 +5096,7 @@ impl Scene {
             styled_wire_fills.as_ref().filter(|fills| !fills.is_empty()),
             pattern_scale,
         );
+        let hatch_ms = crate::perf::elapsed_ms(viewport_profile);
         let images = if let Some(images) = paper_images {
             images
         } else {
@@ -5142,6 +5149,7 @@ impl Scene {
         };
         let text_verts =
             self.gather_text_verts(&all_wires, wire_content_id, text_source_key, &draw_depths);
+        let text_ms = crate::perf::elapsed_ms(viewport_profile) - hatch_ms;
         // Grip-drag / command-preview glyphs, excluded from the epoch-cached base
         // gather above. Two sources, both tiny (one operation's worth) and walked
         // per frame: the overlay wires' own glyphs (MOVE / COPY / ROTATE / SCALE /
@@ -5222,7 +5230,7 @@ impl Scene {
                 second.y, second.z, 0.0,
             ]
         };
-        Some(ViewportData {
+        let viewport_data = ViewportData {
             instance_id,
             force_rasterize,
             wires: Arc::downgrade(&all_wires),
@@ -5306,7 +5314,18 @@ impl Scene {
                 0
             },
             screen_rect,
-        })
+        };
+        if let Some(started) = viewport_profile {
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if total_ms > 25.0 {
+                crate::perf_record!(
+                    "[perf] viewport-data stages total={total_ms:.1}ms base={base_ms:.1}ms styled={styled_ms:.1}ms split={split_ms:.1}ms annotation={annotation_ms:.1}ms through_hatch={hatch_ms:.1}ms text={text_ms:.1}ms selected={} source_wires={}",
+                    self.selected.len(),
+                    all_wires.len(),
+                );
+            }
+        }
+        Some(viewport_data)
     }
 
     /// Update viewcube hover state from cursor position within `bounds`.
