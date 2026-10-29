@@ -3047,20 +3047,31 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         // as wire tessellation in wires_for_block). Only subtract in model space.
         let wo = if is_paper { [0.0f64; 3] } else { [0.0_f64; 3] };
         let (new_handle, new_grips, new_grip_handles) = {
-            let selected = self.tabs[i].scene.selected_entities();
-            let single_handle = (selected.len() == 1
-                && !self.tabs[i].scene.is_layer_locked(selected[0].0)
-                && !self.tabs[i].scene.is_reference_only(selected[0].0))
-            .then(|| selected[0].0);
+            let selected_count = self.tabs[i].scene.selected.len();
+            let single_handle = if selected_count == 1 {
+                self.tabs[i]
+                    .scene
+                    .selected
+                    .iter()
+                    .copied()
+                    .next()
+                    .filter(|handle| {
+                        !self.tabs[i].scene.is_layer_locked(*handle)
+                            && !self.tabs[i].scene.is_reference_only(*handle)
+                    })
+            } else {
+                None
+            };
             let mut grips = Vec::new();
             let mut handles = Vec::new();
-            // Avoid rebuilding every entity's grip markers above the configured
-            // limit. Zero disables the limit.
+            // Check the object limit BEFORE resolving 50k selected entity
+            // references. Above GRIPOBJLIMIT the answer is already known:
+            // zero grips. Avoid the order snapshot, document lookups and Vec.
             let limit = self.grip_object_limit;
-            let selected = if limit > 0 && selected.len() > limit as usize {
+            let selected = if limit > 0 && selected_count > limit as usize {
                 Vec::new()
             } else {
-                selected
+                self.tabs[i].scene.selected_entities()
             };
             for (handle, _entity) in selected {
                 // entity_grips_for errs only for a missing tab/entity; inside
