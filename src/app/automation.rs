@@ -1001,9 +1001,7 @@ impl OpenCADStudio {
                 }
                 self.tabs[i].scene.deselect_all();
                 if req["clear"].as_bool() != Some(true) {
-                    for h in explicit {
-                        self.tabs[i].scene.select_entity(h, false);
-                    }
+                    self.tabs[i].scene.select_entities(&explicit);
                     // Or by a window / crossing box in world XY, through the
                     // viewport's own box test.
                     if let Some(window) = req["window"].as_array() {
@@ -1066,9 +1064,7 @@ impl OpenCADStudio {
                             .filter(|e| layer_filter.is_none_or(|l| e.common().layer == l))
                             .map(|e| e.common().handle)
                             .collect();
-                        for h in handles {
-                            self.tabs[i].scene.select_entity(h, false);
-                        }
+                        self.tabs[i].scene.select_entities(&handles);
                     }
                 }
                 json!({ "ok": true, "selected": self.tabs[i].scene.selected_entities().len() })
