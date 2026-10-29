@@ -165,6 +165,7 @@ impl CadCommand for MirrorCommand {
         let mut out: Vec<WireModel> = self
             .wire_models
             .iter()
+            .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.mirrored_in_plane(p1.as_vec3(), p2.as_vec3(), self.plane.z.as_vec3()))
             .collect();
         // Text ghosts honour MIRRTEXT: on → true glyph mirror (full reflection);
