@@ -59,9 +59,10 @@ impl OpenCADStudio {
         let new_handles = self.tabs[i].scene.copy_entities(&handles, &transform);
         self.tabs[i].dirty = true;
         self.tabs[i].scene.deselect_all();
-        for h in new_handles {
-            self.tabs[i].scene.select_entity(h, false);
-        }
+        // One selection-generation update for the whole copied set.
+        // A per-handle select_entity call invalidated highlight caches
+        // 50,000 times on large COPY operations.
+        self.tabs[i].scene.select_entities(&new_handles);
         self.tabs[i].scene.clear_preview_wire();
         let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
         if let Some(p) = prompt {
@@ -129,9 +130,7 @@ impl OpenCADStudio {
                 .transform_entities(&handles, &crate::command::EntityTransform::Translate(dst1));
             self.tabs[i].dirty = true;
             self.tabs[i].scene.deselect_all();
-            for h in &handles {
-                self.tabs[i].scene.select_entity(*h, false);
-            }
+            self.tabs[i].scene.select_entities(&handles);
             self.tabs[i].scene.clear_preview_wire();
             self.tabs[i].active_cmd = None;
             self.tabs[i].snap_result = None;
