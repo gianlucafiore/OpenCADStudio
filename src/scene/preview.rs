@@ -6,6 +6,31 @@ use crate::scene::model::hatch_model::HatchPattern;
 mod block_parameter;
 
 impl Scene {
+    /// Avoid walking every selected INSERT through the render graph when no
+    /// block definition (or top-level entity) contains a hatch. Model-space
+    /// hatch models alone are insufficient: unselected blocks can contain
+    /// hatches even when the current scene's top-level hatch map is empty.
+    /// Cache the result until any geometry edit changes the epoch.
+    pub(super) fn drawing_contains_hatch_sources(&self) -> bool {
+        if let Some((epoch, has_hatch)) = self.hatch_source_presence_cache.get() {
+            if epoch == self.geometry_epoch {
+                return has_hatch;
+            }
+        }
+        let has_hatch = !self.hatches.is_empty()
+            || self.document.block_records.iter().any(|block| {
+                block.entity_handles.iter().any(|&handle| {
+                    matches!(
+                        self.document.get_entity(handle),
+                        Some(EntityType::Hatch(_))
+                    )
+                })
+            });
+        self.hatch_source_presence_cache
+            .set(Some((self.geometry_epoch, has_hatch)));
+        has_hatch
+    }
+
     // ── Preview wire ──────────────────────────────────────────────────────
 
     pub fn set_preview_wires(&mut self, wires: Vec<WireModel>) {
@@ -39,7 +64,10 @@ impl Scene {
     /// selection colour into the resident hatch list. This keeps selection
     /// changes from regenerating and uploading every hatch in a large drawing.
     pub(super) fn selected_hatch_overlay_models(&self) -> std::sync::Arc<Vec<HatchModel>> {
-        if self.current_layout != "Model" || !self.document.header.fill_mode {
+        if self.current_layout != "Model"
+            || !self.document.header.fill_mode
+            || !self.drawing_contains_hatch_sources()
+        {
             return std::sync::Arc::new(Vec::new());
         }
         let selection_sig = self.selected_hatch_sig();
