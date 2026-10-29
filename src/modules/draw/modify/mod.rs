@@ -46,9 +46,27 @@ pub(super) fn mass_preview_stride(wires: usize) -> usize {
     }
 }
 
+/// ARRAY can multiply one selection into thousands of preview copies.
+pub(super) fn mass_array_preview_stride(wires: usize, copies: usize) -> usize {
+    let total = wires.saturating_mul(copies);
+    if total <= 8_192 || std::env::var_os("OCS_FULL_MASS_PREVIEW").is_some() {
+        1
+    } else {
+        total.div_ceil(2_048).max(1)
+    }
+}
+
 #[cfg(test)]
 mod mass_preview_tests {
-    use super::mass_preview_stride;
+    use super::{mass_array_preview_stride, mass_preview_stride};
+
+    #[test]
+    fn massive_array_preview_budget_accounts_for_all_copies() {
+        let stride = mass_array_preview_stride(54_433, 12);
+        assert!(stride > 1);
+        assert!(54_433usize.div_ceil(stride) * 12 <= 2_048);
+        assert_eq!(mass_array_preview_stride(100, 3), 1);
+    }
 
     #[test]
     fn massive_wire_preview_is_bounded_without_affecting_small_edits() {
