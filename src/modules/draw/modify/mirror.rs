@@ -38,6 +38,7 @@ enum Step {
 pub struct MirrorCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    mass_outline: Option<WireModel>,
     /// Text ghosts paired with their bounding-box centre — mirrored per MIRRTEXT
     /// so the preview matches the commit (true glyph mirror on / symmetric
     /// right-reading off).
@@ -56,6 +57,7 @@ impl MirrorCommand {
     ) -> Self {
         Self {
             handles,
+            mass_outline: super::mass_preview_extent(&wire_models),
             wire_models,
             text_ghosts,
             mirror_text,
@@ -181,7 +183,7 @@ impl CadCommand for MirrorCommand {
                 out.push(w.translated(delta));
             }
         }
-        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+        if let Some(extent) = &self.mass_outline {
             out.push(extent.mirrored_in_plane(
                 p1.as_vec3(),
                 p2.as_vec3(),
