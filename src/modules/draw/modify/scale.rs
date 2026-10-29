@@ -233,6 +233,7 @@ impl CadCommand for ScaleCommand {
         let mut out: Vec<WireModel> = self
             .wire_models
             .iter()
+            .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.scaled(base.as_vec3(), factor))
             .collect();
         out.push(WireModel::solid(
