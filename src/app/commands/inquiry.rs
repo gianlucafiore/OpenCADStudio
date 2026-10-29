@@ -910,9 +910,7 @@ impl OpenCADStudio {
                         .push_output(crate::t!("QSELECT: no matching entities.").as_ref());
                 } else {
                     self.tabs[i].scene.deselect_all();
-                    for h in &matched {
-                        self.tabs[i].scene.select_entity(*h, false);
-                    }
+                    self.tabs[i].scene.select_entities(&matched);
                     self.command_line.push_output(
                         crate::tf!("QSELECT: {} entity(ies) selected.", matched.len()).as_ref(),
                     );
