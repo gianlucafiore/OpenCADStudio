@@ -12150,6 +12150,12 @@ impl Scene {
         if !crossing
             || !axis_aligned
             || !aabb.iter().all(|v| v.is_finite())
+            // The legacy exact test clamps boxes to the viewport. Never
+            // accept off-pane geometry via the unclamped world rectangle.
+            || screen_rect[0] < 0.0
+            || screen_rect[1] < 0.0
+            || screen_rect[2] > bounds.width
+            || screen_rect[3] > bounds.height
             || self.current_layout != "Model"
             || !self.interaction_source_is_resident(&wires, bounds.height)
             || !self.interaction_index_worthwhile(&wires)
@@ -12188,10 +12194,14 @@ impl Scene {
         );
         // Strict interior check tolerates f32 AABB rounding at large drawing
         // coordinates. Boundary-touching wires are left for the precise pass.
-        let margin = (aabb[2] - aabb[0])
-            .abs()
+        let margin = aabb
+            .iter()
+            .copied()
+            .map(f64::abs)
+            .fold(0.0_f64, f64::max)
+            .max((aabb[2] - aabb[0]).abs())
             .max((aabb[3] - aabb[1]).abs())
-            * 1e-6
+            * 2e-6
             + 1e-5;
         let contained = |wire: &WireModel| {
             let b = wire.aabb;
