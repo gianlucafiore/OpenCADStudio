@@ -255,6 +255,9 @@ impl CadCommand for CopyCommand {
             .step_by(super::mass_preview_stride(self.wire_models.len()))
             .map(|w| w.translated(delta.as_vec3()))
             .collect();
+        if let Some(extent) = super::mass_preview_extent(&self.wire_models) {
+            out.push(extent.translated(delta.as_vec3()));
+        }
         out.push(WireModel::solid(
             "rubber_band".into(),
             vec![
