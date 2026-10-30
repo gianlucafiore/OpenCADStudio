@@ -4374,6 +4374,26 @@ impl Scene {
         );
         highlighted.sort_unstable_by_key(|(handle, _)| handle.value());
 
+        // Auxiliary annotation/mesh/hatch highlights can tessellate and copy
+        // full entity geometry. On a massive selection they used to process
+        // every handle, independently of the bounded resident-wire xray LOD.
+        // Keep hover exact and sample only selected auxiliary highlights;
+        // logical selection, edit commands, and the resident-wire overlay
+        // remain unchanged. This bounds transient memory on MOVE/reselect.
+        const AUX_HIGHLIGHT_BUDGET: usize = 512;
+        if self.selected.len() > AUX_HIGHLIGHT_BUDGET {
+            let stride = self.selected.len().div_ceil(AUX_HIGHLIGHT_BUDGET);
+            let mut selected_index = 0usize;
+            highlighted.retain(|(_, is_selected)| {
+                if !*is_selected {
+                    return true;
+                }
+                let keep = selected_index % stride == 0;
+                selected_index += 1;
+                keep
+            });
+        }
+
         let empty_selection = rustc_hash::FxHashSet::default();
         let interaction_meshes = self.interaction_meshes_arc();
         let mut wires = Vec::new();
