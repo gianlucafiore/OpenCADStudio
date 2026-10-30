@@ -11199,7 +11199,10 @@ impl Scene {
         wires: Arc<Vec<WireModel>>,
         index: Arc<crate::scene::pick::interaction_index::InteractionIndex>,
     ) {
-        const MAX_CACHED_SOURCES: usize = 4;
+        // A dense drawing can retain several complete per-source spatial
+        // indexes after MOVE. Keep only the newest exact source; the edit
+        // overlay base is retained separately when it is still applicable.
+        const MAX_CACHED_SOURCES: usize = 1;
         let source = Arc::as_ptr(&wires) as usize;
         let mut cache = self.interaction_index_cache.borrow_mut();
         cache.retain(|(cached_epoch, ptr, weak, _)| {
