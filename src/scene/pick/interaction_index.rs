@@ -963,44 +963,74 @@ impl InteractionIndex {
         #[cfg(not(target_arch = "wasm32"))]
         let spatial_started = iced::time::Instant::now();
 
+        // Building eight spatial grids concurrently multiplies peak memory:
+        // each builder allocates cell counts, entry arrays and temporary
+        // workspaces while the flattened source arrays are still alive.
+        // On dense INSERT drawings this can exhaust RAM immediately after
+        // MOVE when a new interaction index is requested by the next click.
+        // Serialize only the massive builds; small drawings keep the fast path.
+        #[cfg(not(target_arch = "wasm32"))]
+        let massive_index = total_segments
+            .saturating_add(total_key_segs)
+            .saturating_add(total_key_verts)
+            .saturating_add(total_snaps)
+            .saturating_add(total_fills)
+            .saturating_add(total_picks)
+            .saturating_add(total_glyphs) > 1_000_000;
+
         #[cfg(not(target_arch = "wasm32"))]
         let (
             ((wires, segments), (snap_points, key_vertices)),
             ((key_segments, fill_triangles), (pick_triangles, glyphs)),
-        ) = crate::par::join(
-            || {
-                crate::par::join(
-                    || {
-                        crate::par::join(
-                            || SpatialSet::build(wire_entries),
-                            || SpatialSet::build(segment_entries),
-                        )
-                    },
-                    || {
-                        crate::par::join(
-                            || SpatialSet::build(snap_point_entries),
-                            || SpatialSet::build(key_vertex_entries),
-                        )
-                    },
-                )
-            },
-            || {
-                crate::par::join(
-                    || {
-                        crate::par::join(
-                            || SpatialSet::build(key_segment_entries),
-                            || SpatialSet::build(fill_triangle_entries),
-                        )
-                    },
-                    || {
-                        crate::par::join(
-                            || SpatialSet::build(pick_triangle_entries),
-                            || SpatialSet::build(glyph_entries),
-                        )
-                    },
-                )
-            },
-        );
+        ) = if massive_index {
+            let wires = SpatialSet::build(wire_entries);
+            let segments = SpatialSet::build(segment_entries);
+            let snap_points = SpatialSet::build(snap_point_entries);
+            let key_vertices = SpatialSet::build(key_vertex_entries);
+            let key_segments = SpatialSet::build(key_segment_entries);
+            let fill_triangles = SpatialSet::build(fill_triangle_entries);
+            let pick_triangles = SpatialSet::build(pick_triangle_entries);
+            let glyphs = SpatialSet::build(glyph_entries);
+            (
+                ((wires, segments), (snap_points, key_vertices)),
+                ((key_segments, fill_triangles), (pick_triangles, glyphs)),
+            )
+        } else {
+            crate::par::join(
+                || {
+                    crate::par::join(
+                        || {
+                            crate::par::join(
+                                || SpatialSet::build(wire_entries),
+                                || SpatialSet::build(segment_entries),
+                            )
+                        },
+                        || {
+                            crate::par::join(
+                                || SpatialSet::build(snap_point_entries),
+                                || SpatialSet::build(key_vertex_entries),
+                            )
+                        },
+                    )
+                },
+                || {
+                    crate::par::join(
+                        || {
+                            crate::par::join(
+                                || SpatialSet::build(key_segment_entries),
+                                || SpatialSet::build(fill_triangle_entries),
+                            )
+                        },
+                        || {
+                            crate::par::join(
+                                || SpatialSet::build(pick_triangle_entries),
+                                || SpatialSet::build(glyph_entries),
+                            )
+                        },
+                    )
+                },
+            )
+        };
         #[cfg(target_arch = "wasm32")]
         let (
             wires,
