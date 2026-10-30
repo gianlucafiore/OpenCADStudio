@@ -4530,9 +4530,12 @@ impl Scene {
 
         let wires = Arc::new(wires);
         let mut cache = self.annotation_highlight_cache.borrow_mut();
-        if cache.len() > 16 {
-            cache.clear();
-        }
+        // Each generation can contain a complete expanded highlight for a
+        // massive selection. Keeping 17 generations retains many gigabytes
+        // after MOVE / reselect. Retain only the most recent snapshot; the
+        // cache is an optional render optimization, never document state.
+        // A live viewport consumer may still hold its own Arc safely.
+        cache.clear();
         cache.insert(key, Arc::clone(&wires));
         wires
     }
