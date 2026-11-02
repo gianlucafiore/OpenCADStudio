@@ -4969,17 +4969,18 @@ impl Scene {
             uniforms.lineweight_scale = paper_units_per_mm / paper_per_pixel / MM_TO_PX;
         }
 
-        // Model space: scale linetypes by the current annotation scale's ratio
-        // (1:100 draws them 100 times longer) so they match a paper-space
-        // viewport at that scale. The ratio alone: a linetype is defined in
-        // drawing units, so the paper-millimetre conversion that
-        // `annotation_scale` carries shrank a metre drawing's dashes 1000
-        // times, below a pixel, and they drew solid (#2036).
+        // Model space uses drawing-unit linetypes (MSLTSCALE=0 behavior).
+        // The previous unconditional 1/CANNOSCALEVALUE multiplier made a
+        // metre drawing at 1:100 stretch e.g. a 0.5m dash into a 50m dash:
+        // short lines looked Continuous irrespective of their linetype.
+        // LTSCALE and per-entity CELTSCALE are already baked into the wire
+        // pattern by resolve_pattern; do not scale them a second time.
+        //
+        // A true MSLTSCALE=1 option must be implemented and persisted in the
+        // document model before annotative model-space scaling is re-enabled.
+        // There is currently no MSLTSCALE header field in the pinned codec.
         if self.current_layout == "Model" {
-            let ratio = 1.0 / self.document.header.annotation_scale_value;
-            if ratio.is_finite() && ratio > 1e-9 {
-                uniforms.linetype_scale = ratio as f32;
-            }
+            uniforms.linetype_scale = model_space_linetype_multiplier();
         } else if self.document.header.paper_space_linetype_scaling
             && !inst.paper_sheet
             && inst.handle != Handle::NULL
@@ -5362,6 +5363,26 @@ impl Scene {
         } else {
             mouse::Interaction::default()
         }
+    }
+}
+
+/// Model-space line types are expressed in drawing units. Until the document
+/// model persists an MSLTSCALE switch, do not silently stretch the shader's
+/// pattern by the current CANNOSCALEVALUE (equivalent to MSLTSCALE=0).
+#[inline]
+fn model_space_linetype_multiplier() -> f32 {
+    1.0
+}
+
+#[cfg(test)]
+mod model_linetype_scale_tests {
+    use super::*;
+
+    #[test]
+    fn model_space_uses_the_original_drawing_unit_dash_pattern() {
+        // Annotation scale is intentionally absent from this multiplier:
+        // changing CANNOSCALEVALUE must not make a 0.5m dash 50m long.
+        assert_eq!(model_space_linetype_multiplier(), 1.0);
     }
 }
 
