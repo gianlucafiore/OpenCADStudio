@@ -4980,7 +4980,7 @@ impl Scene {
         // document model before annotative model-space scaling is re-enabled.
         // There is currently no MSLTSCALE header field in the pinned codec.
         if self.current_layout == "Model" {
-            uniforms.linetype_scale = 1.0;
+            uniforms.linetype_scale = model_space_linetype_multiplier();
         } else if self.document.header.paper_space_linetype_scaling
             && !inst.paper_sheet
             && inst.handle != Handle::NULL
@@ -5363,6 +5363,26 @@ impl Scene {
         } else {
             mouse::Interaction::default()
         }
+    }
+}
+
+/// Model-space line types are expressed in drawing units. Until the document
+/// model persists an MSLTSCALE switch, do not silently stretch the shader's
+/// pattern by the current CANNOSCALEVALUE (equivalent to MSLTSCALE=0).
+#[inline]
+fn model_space_linetype_multiplier() -> f32 {
+    1.0
+}
+
+#[cfg(test)]
+mod model_linetype_scale_tests {
+    use super::*;
+
+    #[test]
+    fn model_space_uses_the_original_drawing_unit_dash_pattern() {
+        // Annotation scale is intentionally absent from this multiplier:
+        // changing CANNOSCALEVALUE must not make a 0.5m dash 50m long.
+        assert_eq!(model_space_linetype_multiplier(), 1.0);
     }
 }
 
