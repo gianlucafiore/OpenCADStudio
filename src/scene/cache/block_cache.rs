@@ -4239,4 +4239,71 @@ mod block_linetype_regression_tests {
         // The INSERT's own linetype scale 7 has no effect on an explicit child.
         assert_patterns(&expand(&mut doc, insert, 1.0), 18.0);
     }
+
+
+    #[test]
+    fn complex_linetype_inside_insert_retains_cpu_dashes_and_embedded_text() {
+        use codec::tables::linetype::{
+            LineTypeComplexContent, LineTypeComplexData, LineTypeElement,
+        };
+        use codec::tables::TextStyle;
+
+        let mut doc = Document::new();
+        let mut font = TextStyle::new("BLOCK_FENCE_TEXT");
+        font.handle = doc.allocate_handle();
+        font.font_file = "txt.shx".to_string();
+        let font_handle = font.handle;
+        doc.text_styles.add(font).unwrap();
+
+        let mut fence = LineType::new("BLOCK_COMPLEX_FENCE");
+        fence.handle = doc.allocate_handle();
+        fence.add_element(LineTypeElement::dash(1.5));
+        fence.add_element(LineTypeElement {
+            length: -0.01,
+            complex: Some(LineTypeComplexData {
+                content: LineTypeComplexContent::Text { text: "X".into() },
+                style_handle: font_handle,
+                scale: 0.25,
+                offset: [-0.1, -0.125],
+                source_flags: 2,
+                ..Default::default()
+            }),
+        });
+        fence.add_element(LineTypeElement::space(0.01));
+        fence.pattern_length = 1.52;
+        doc.line_types.add(fence).unwrap();
+
+        let mut layer = Layer::new("BLOCK_FENCE_LAYER");
+        layer.line_type = "BLOCK_COMPLEX_FENCE".to_string();
+        doc.layers.add(layer).unwrap();
+
+        let block = add_block(&mut doc, "BLK_COMPLEX_FENCE");
+        let mut line = Line::from_points(Vector3::ZERO, Vector3::new(20.0, 0.0, 0.0));
+        line.common.layer = "BLOCK_FENCE_LAYER".to_string();
+        line.common.linetype = "ByLayer".to_string();
+        add_member(&mut doc, block, EntityType::Line(line));
+
+        let insert = Insert::new("BLK_COMPLEX_FENCE", Vector3::ZERO);
+        let wires = expand(&mut doc, insert, 1.0);
+        assert!(!wires.is_empty());
+        assert!(
+            wires.iter().any(|w| !w.text_verts.is_empty()),
+            "complex linetype text must survive block-cache tessellation"
+        );
+        let dash_segments: usize = wires
+            .iter()
+            .filter(|w| !w.points.is_empty())
+            .map(|w| w.points.windows(2)
+                .filter(|segment| segment[0][0].is_finite() && segment[1][0].is_finite())
+                .count())
+            .sum();
+        assert!(
+            dash_segments > 2,
+            "complex linetype strokes must be CPU-expanded, got {dash_segments}"
+        );
+        assert!(
+            wires.iter().all(|w| w.pattern_length == 0.0),
+            "already-expanded complex strokes must not be GPU-dashed again"
+        );
+    }
 }
