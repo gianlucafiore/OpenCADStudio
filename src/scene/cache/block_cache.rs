@@ -169,9 +169,17 @@ struct InheritedLinetype {
 
 impl InheritedLinetype {
     fn resolve(document: &Document, name: &str) -> Self {
+        let simple = name.is_empty()
+            || name.eq_ignore_ascii_case("Continuous")
+            || name.eq_ignore_ascii_case("ByLayer")
+            || name.eq_ignore_ascii_case("ByBlock");
         Self {
             name: name.to_string(),
-            complex: crate::io::linetypes::resolve_complex_lt(document, name).map(Arc::new),
+            complex: if simple {
+                None
+            } else {
+                crate::io::linetypes::resolve_complex_lt(document, name).map(Arc::new)
+            },
         }
     }
 }
@@ -1548,7 +1556,13 @@ fn expansion_prototype_key(
     let ins_linetype = crate::scene::view::render::linetype_name_for_common_viewport(
         doc, &ins.common, None,
     ).to_string();
-    let layer_linetype = layer_linetype_for_insert(doc, ins, None).name;
+    // Keying the prototype needs the name, not a resolved ComplexLt. Avoid
+    // walking the type table for each repeated block COPY.
+    let mut layer_common = ins.common.clone();
+    layer_common.linetype = "ByLayer".to_string();
+    let layer_linetype = crate::scene::view::render::linetype_name_for_common_viewport(
+        doc, &layer_common, None,
+    ).to_string();
     ExpansionPrototypeKey {
         block_name: ins.block_name.clone(),
         linear,
@@ -2855,6 +2869,11 @@ fn emit_inherited_complex_wire(
         if length < 1e-9 {
             continue;
         }
+        // apply_along has its own hard cap, but this tighter bound prevents
+        // allocating huge intermediate stroke vectors for one repeated block.
+        if length / (base_period as f64 * scale as f64) > 20_000.0 {
+            return false;
+        }
         let origin = run[0];
         let local: Vec<[f32; 3]> = run.iter().map(|p| [
             (p[0] - origin[0]) as f32,
@@ -2908,6 +2927,7 @@ fn emit_inherited_complex_wire(
     expanded[0].snap_pts.clone_from(&lw.snap_pts);
     expanded[0].key_vertices.clone_from(&lw.key_vertices);
     expanded[0].point_marker = lw.point_marker;
+    expanded[0].aabb_local = aabb_union(expanded[0].aabb_local, lw.aabb_local);
     for part in &expanded {
         emit_wire(part, accum_xform, ctx, out, d_range);
     }
