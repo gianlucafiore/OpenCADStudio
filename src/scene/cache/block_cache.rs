@@ -2772,6 +2772,148 @@ fn transformed_marker_point(
         + KernelVec3::from(target.normal.to_array()) * axial * axial_scale
 }
 
+/// Only for a complex type inherited through ByBlock or layer-0 ByLayer.
+/// The definition cache has the centreline but cannot know the effective
+/// pattern until its parent INSERT (possibly several layers up) is expanded.
+/// Work in the original definition frame, then let emit_wire apply the usual
+/// transform and batch/stub pipeline to the resulting stroke and glyph wires.
+///
+/// Keep the GPU fast path for all simple types and explicitly resolved members.
+/// A hard limit prevents a highly repetitive pattern exploding huge block sets.
+fn emit_inherited_complex_wire(
+    lw: &LocalWire,
+    accum_xform: &Transform,
+    ctx: &ExpandCtx<'_>,
+    out: &mut Batches,
+    d_range: (f32, f32),
+) -> bool {
+    let linetype = if lw.lt_is_byblock {
+        &ctx.ins_linetype
+    } else if lw.lt_l0 {
+        &ctx.layer_linetype
+    } else {
+        return false;
+    };
+    let Some(clt) = linetype.complex.as_deref() else {
+        return false;
+    };
+    if lw.points.len() < 2
+        || !lw.fill_tris.is_empty()
+        || !lw.pick_tris.is_empty()
+        || lw.world_width != 0.0
+        || !lw.taper_widths.is_empty()
+    {
+        return false;
+    }
+    let base_period: f32 = clt.segments.iter().map(|segment| {
+        match segment {
+            crate::io::linetypes::LtSegment::Dash(length)
+            | crate::io::linetypes::LtSegment::Space(length) => *length,
+            _ => 0.0,
+        }
+    }).sum();
+    if base_period <= 1e-6 {
+        return false;
+    }
+    let inherited_period = if lw.lt_is_byblock {
+        ctx.ins_pat_len
+    } else {
+        ctx.l0.pat_len
+    };
+    let scale = if inherited_period > 1e-6 {
+        inherited_period / base_period * lw.linetype_scale
+    } else {
+        ctx.doc.header.linetype_scale as f32 * lw.linetype_scale
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        return false;
+    }
+
+    let paths: Vec<[f64; 3]> = lw.points.iter().enumerate().map(|(index, point)| {
+        if !point.iter().all(|value| value.is_finite()) {
+            return [f64::NAN; 3];
+        }
+        let low = lw.points_low.get(index).copied().unwrap_or([0.0; 3]);
+        [
+            point[0] as f64 + low[0] as f64,
+            point[1] as f64 + low[1] as f64,
+            point[2] as f64 + low[2] as f64,
+        ]
+    }).collect();
+
+    let mut expanded: Vec<LocalWire> = Vec::new();
+    for run in paths.split(|point| !point[0].is_finite()) {
+        if run.len() < 2 {
+            continue;
+        }
+        let length: f64 = run.windows(2).map(|pair| {
+            let dx = pair[1][0] - pair[0][0];
+            let dy = pair[1][1] - pair[0][1];
+            let dz = pair[1][2] - pair[0][2];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        }).sum();
+        if length < 1e-9 {
+            continue;
+        }
+        let origin = run[0];
+        let local: Vec<[f32; 3]> = run.iter().map(|p| [
+            (p[0] - origin[0]) as f32,
+            (p[1] - origin[1]) as f32,
+            (p[2] - origin[2]) as f32,
+        ]).collect();
+        let mut strokes = crate::scene::text::complex_lt::apply_along(
+            "",
+            &local,
+            clt,
+            scale,
+            lw.color,
+            ctx.selected,
+            lw.line_weight_px,
+            Some(length as f32),
+        );
+        if strokes.is_empty() || strokes.len() + expanded.len() > 20_000 {
+            return false;
+        }
+        for mut stroke in strokes.drain(..) {
+            crate::scene::convert::tessellate::shift_wire_to_world(&mut stroke, origin);
+            let mut part = lw.clone();
+            part.points = stroke.points;
+            part.points_low = stroke.points_low;
+            part.text_verts = stroke.text_verts;
+            part.searchable_text = stroke.searchable_text;
+            part.pattern_length = 0.0;
+            part.pattern = [0.0; 8];
+            part.pattern_stations.clear();
+            part.lt_is_byblock = false;
+            part.lt_l0 = false;
+            part.tangent_geoms.clear();
+            // The original unbroken entity retains its snaps once; the dash
+            // strokes must not multiply snap points by the number of dashes.
+            part.snap_pts.clear();
+            part.key_vertices.clear();
+            part.point_marker = None;
+            part.is_fill_only = false;
+            part.aabb_local = aabb_from_points_iter(
+                part.points.iter().copied()
+                    .chain(part.text_verts.iter().map(|v| v.pos)),
+            );
+            expanded.push(part);
+        }
+    }
+    if expanded.is_empty() {
+        return false;
+    }
+    // Keep the original entity's reference points even though its display
+    // has been split into many disjoint strokes.
+    expanded[0].snap_pts.clone_from(&lw.snap_pts);
+    expanded[0].key_vertices.clone_from(&lw.key_vertices);
+    expanded[0].point_marker = lw.point_marker;
+    for part in &expanded {
+        emit_wire(part, accum_xform, ctx, out, d_range);
+    }
+    true
+}
+
 fn emit_wire(
     lw: &LocalWire,
     accum_xform: &Transform,
@@ -2785,6 +2927,13 @@ fn emit_wire(
         && lw.pick_tris.is_empty()
         && lw.snap_pts.is_empty()
     {
+        return;
+    }
+
+    // An inherited complex linetype has to be walked after resolving the
+    // containing INSERT chain; a numeric GPU dash pattern cannot emit its
+    // embedded shapes or glyphs. Simple types remain on the fast path.
+    if emit_inherited_complex_wire(lw, accum_xform, ctx, out, d_range) {
         return;
     }
 
