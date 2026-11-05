@@ -2855,6 +2855,25 @@ fn emit_inherited_complex_wire(
         ]
     }).collect();
 
+    // Build one small metadata template. Cloning the original LocalWire for
+    // each dash would copy the entire source polyline every time: quadratic
+    // memory growth on tree/lowpoly blocks with many segments.
+    let mut template = lw.clone();
+    template.points.clear();
+    template.points_low.clear();
+    template.text_verts.clear();
+    template.searchable_text.clear();
+    template.tangent_geoms.clear();
+    template.snap_pts.clear();
+    template.key_vertices.clear();
+    template.pattern_stations.clear();
+    template.point_marker = None;
+    template.pattern_length = 0.0;
+    template.pattern = [0.0; 8];
+    template.lt_is_byblock = false;
+    template.lt_l0 = false;
+    template.is_fill_only = false;
+
     let mut expanded: Vec<LocalWire> = Vec::new();
     for run in paths.split(|point| !point[0].is_finite()) {
         if run.len() < 2 {
@@ -2895,23 +2914,13 @@ fn emit_inherited_complex_wire(
         }
         for mut stroke in strokes.drain(..) {
             crate::scene::convert::tessellate::shift_wire_to_world(&mut stroke, origin);
-            let mut part = lw.clone();
+            let mut part = template.clone();
             part.points = stroke.points;
             part.points_low = stroke.points_low;
             part.text_verts = stroke.text_verts;
             part.searchable_text = stroke.searchable_text;
-            part.pattern_length = 0.0;
-            part.pattern = [0.0; 8];
-            part.pattern_stations.clear();
-            part.lt_is_byblock = false;
-            part.lt_l0 = false;
-            part.tangent_geoms.clear();
-            // The original unbroken entity retains its snaps once; the dash
-            // strokes must not multiply snap points by the number of dashes.
-            part.snap_pts.clear();
-            part.key_vertices.clear();
-            part.point_marker = None;
-            part.is_fill_only = false;
+            // The original unbroken entity's reference points are restored
+            // only once after the stroke loop, never cloned per dash.
             part.aabb_local = aabb_from_points_iter(
                 part.points.iter().copied()
                     .chain(part.text_verts.iter().map(|v| v.pos)),
