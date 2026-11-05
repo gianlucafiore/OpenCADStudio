@@ -82,6 +82,9 @@ pub struct LocalWire {
     pub aci: u8,
     pub pattern_length: f32,
     pub pattern: [f32; 8],
+    /// Per-entity factor applied after inherited ByBlock / layer-0 patterns.
+    /// Explicit linetypes already have this scale in their cached pattern.
+    pub linetype_scale: f32,
     pub line_weight_px: f32,
     pub pattern_stations: Vec<f32>,
     /// World-space band width for a wide polyline (see `WireModel.world_width`).
@@ -967,6 +970,7 @@ fn tessellate_sub_local(
             aci,
             pattern_length: pat_len,
             pattern: pat,
+            linetype_scale: sub.common().linetype_scale as f32,
             line_weight_px: lw_px,
             pattern_stations: wire.pattern_stations,
             world_width: wire.world_width,
@@ -2630,10 +2634,15 @@ fn emit_wire(
     } else {
         lw.aci
     };
+    // The inherited pattern is resolved at the INSERT, but the child
+    // still contributes its own linetype_scale. Without it, ByBlock and
+    // layer-0 ByLayer block members can appear continuous at typical zoom.
     let (final_pat_len, final_pat) = if lw.lt_is_byblock {
-        (ctx.ins_pat_len, ctx.ins_pat)
+        let scale = lw.linetype_scale;
+        (ctx.ins_pat_len * scale, ctx.ins_pat.map(|v| v * scale))
     } else if lw.lt_l0 {
-        (ctx.l0.pat_len, ctx.l0.pat)
+        let scale = lw.linetype_scale;
+        (ctx.l0.pat_len * scale, ctx.l0.pat.map(|v| v * scale))
     } else {
         (lw.pattern_length, lw.pattern)
     };
@@ -2768,6 +2777,13 @@ fn emit_wire(
                     None
                 };
 
+                // This analytical curve skips the batched-wire path. Apply
+                // the same viewport and INSERT scaling to its line pattern.
+                let curve_scale = ctx.pslt_factor * if lw.points.len() > 1 {
+                    transformed_wire_length_scale(lw, accum_xform)
+                } else {
+                    band_scale()
+                };
                 // A wide or tapered polyline arc keeps its band: the
                 // analytical arc pipeline draws both (`circle_gpu`).
                 let wire = WireModel {
@@ -2794,8 +2810,8 @@ fn emit_wire(
                     points_low,
                     color,
                     selected: ctx.selected,
-                    pattern_length: final_pat_len,
-                    pattern: final_pat,
+                    pattern_length: final_pat_len * curve_scale,
+                    pattern: final_pat.map(|v| v * curve_scale),
                     line_weight_px: final_lw_px,
                     aci: final_aci,
                     snap_pts,
