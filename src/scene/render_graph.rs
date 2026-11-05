@@ -74,6 +74,7 @@ pub struct InsertStyleSpec {
     transparency_bylayer: bool,
     linetype_byblock: bool,
     linetype_bylayer: bool,
+    linetype_scale: f32,
     lineweight_byblock: bool,
     lineweight_bylayer: bool,
     layer0: bool,
@@ -96,6 +97,7 @@ impl InsertStyleSpec {
             transparency_bylayer: common.transparency.is_by_layer(),
             linetype_byblock: linetype.eq_ignore_ascii_case("byblock"),
             linetype_bylayer: linetype.is_empty() || linetype.eq_ignore_ascii_case("bylayer"),
+            linetype_scale: common.linetype_scale as f32,
             lineweight_byblock: matches!(common.line_weight, codec::types::LineWeight::ByBlock),
             lineweight_bylayer: matches!(
                 common.line_weight,
@@ -125,12 +127,15 @@ impl InsertStyleSpec {
         } else {
             insert.0[3]
         };
+        // The parent's resolved pattern already includes LTSCALE. Keep the
+        // nested INSERT's own linetype_scale when it inherits ByBlock or the
+        // placing layer's ByLayer pattern from layer 0.
         if self.linetype_byblock {
-            insert.1 = parent.insert.1;
-            insert.2 = parent.insert.2;
+            insert.1 = parent.insert.1 * self.linetype_scale;
+            insert.2 = parent.insert.2.map(|v| v * self.linetype_scale);
         } else if self.layer0 && self.linetype_bylayer {
-            insert.1 = parent.layer0.pat_len;
-            insert.2 = parent.layer0.pat;
+            insert.1 = parent.layer0.pat_len * self.linetype_scale;
+            insert.2 = parent.layer0.pat.map(|v| v * self.linetype_scale);
         }
         if self.lineweight_byblock {
             insert.3 = parent.insert.3;
