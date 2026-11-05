@@ -4542,4 +4542,86 @@ mod block_linetype_regression_tests {
             "already-expanded complex strokes must not be GPU-dashed again"
         );
     }
+
+
+    #[test]
+    fn nested_insert_inherits_complex_linetype_through_byblock_and_layer_zero() {
+        use codec::tables::linetype::{
+            LineTypeComplexContent, LineTypeComplexData, LineTypeElement,
+        };
+        use codec::tables::TextStyle;
+
+        for byblock in [true, false] {
+            let mut doc = Document::new();
+            let mut font = TextStyle::new("NESTED_FENCE_TEXT");
+            font.handle = doc.allocate_handle();
+            font.font_file = "txt.shx".to_string();
+            let font_handle = font.handle;
+            doc.text_styles.add(font).unwrap();
+
+            let mut fence = LineType::new("NESTED_FENCE");
+            fence.handle = doc.allocate_handle();
+            fence.add_element(LineTypeElement::dash(1.5));
+            fence.add_element(LineTypeElement {
+                length: -0.01,
+                complex: Some(LineTypeComplexData {
+                    content: LineTypeComplexContent::Text { text: "X".into() },
+                    style_handle: font_handle,
+                    scale: 0.25,
+                    offset: [-0.1, -0.125],
+                    source_flags: 2,
+                    ..Default::default()
+                }),
+            });
+            fence.add_element(LineTypeElement::space(0.01));
+            fence.pattern_length = 1.52;
+            doc.line_types.add(fence).unwrap();
+
+            let mut layer = Layer::new("NESTED_FENCE_LAYER");
+            layer.line_type = "NESTED_FENCE".to_string();
+            doc.layers.add(layer).unwrap();
+
+            let leaf = add_block(&mut doc, "NESTED_FENCE_LEAF");
+            let mut line = Line::from_points(
+                Vector3::ZERO,
+                Vector3::new(20.0, 0.0, 0.0),
+            );
+            line.common.layer = "0".to_string();
+            line.common.linetype =
+                if byblock { "ByBlock" } else { "ByLayer" }.to_string();
+            add_member(&mut doc, leaf, EntityType::Line(line));
+
+            let middle = add_block(&mut doc, "NESTED_FENCE_MIDDLE");
+            let mut child = Insert::new("NESTED_FENCE_LEAF", Vector3::ZERO);
+            child.common.layer = "0".to_string();
+            child.common.linetype =
+                if byblock { "ByBlock" } else { "ByLayer" }.to_string();
+            add_member(&mut doc, middle, EntityType::Insert(child));
+
+            let mut root = Insert::new("NESTED_FENCE_MIDDLE", Vector3::ZERO);
+            root.common.layer = "NESTED_FENCE_LAYER".to_string();
+            root.common.linetype =
+                if byblock { "NESTED_FENCE" } else { "ByLayer" }.to_string();
+
+            let wires = expand(&mut doc, root, 1.0);
+            let label = if byblock { "ByBlock" } else { "layer-0 ByLayer" };
+            assert!(
+                wires.iter().any(|wire| !wire.text_verts.is_empty()),
+                "{label} lost complex linetype glyphs in nested INSERT"
+            );
+            let segments: usize = wires.iter().map(|wire| {
+                wire.points.windows(2).filter(|pair| {
+                    pair[0][0].is_finite() && pair[1][0].is_finite()
+                }).count()
+            }).sum();
+            assert!(
+                segments > 3,
+                "{label} must retain CPU-walked dash strokes, got {segments}"
+            );
+            assert!(
+                wires.iter().all(|wire| wire.pattern_length == 0.0),
+                "{label} already expanded strokes must not be dashed again"
+            );
+        }
+    }
 }
