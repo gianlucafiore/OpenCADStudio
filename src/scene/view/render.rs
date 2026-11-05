@@ -4205,10 +4205,16 @@ pub(crate) fn render_style_for_block_sub_viewport(
     let final_color = [resolved_rgb[0], resolved_rgb[1], resolved_rgb[2], alpha];
 
     let lt_bylayer = common.linetype.is_empty() || common.linetype.eq_ignore_ascii_case("bylayer");
+    // The inherited pattern already includes the drawing's LTSCALE, but it
+    // does not yet include this child's per-entity linetype scale. A ByBlock
+    // child (or a ByLayer child on layer 0) must keep that scale when its
+    // pattern comes from the INSERT instead of its own layer.
     let (final_pat_len, final_pat) = if common.linetype.eq_ignore_ascii_case("byblock") {
-        (insert_pat_len, insert_pat)
+        let scale = common.linetype_scale as f32;
+        (insert_pat_len * scale, insert_pat.map(|v| v * scale))
     } else if on_l0 && lt_bylayer {
-        (l0.pat_len, l0.pat)
+        let scale = common.linetype_scale as f32;
+        (l0.pat_len * scale, l0.pat.map(|v| v * scale))
     } else {
         (pat_len, pat)
     };
