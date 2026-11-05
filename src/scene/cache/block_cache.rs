@@ -853,7 +853,81 @@ fn tessellate_sub_local(
     // Pass `local_offset` as the f64 world-offset so tessellate subtracts it
     // before casting to f32 — same precision-preservation trick used for
     // top-level entities, applied per-defn.
-    let wires_out = if let EntityType::Dimension(dimension) = sub {
+    // Complex linetypes are CPU-walked in the ordinary entity render path
+    // (their pattern contains embedded text/shapes). A plain tessellate() call
+    // only produces the underlying solid centreline; that is why an EXPLODEd
+    // reference displays its decorations but an INSERT does not.
+    //
+    // Only divert genuinely complex stroke entities. Standard dash-only
+    // linetypes must retain the fast GPU/cache path for massive block arrays.
+    // Layer-0 ByLayer and ByBlock names are not resolved until INSERT time and
+    // are deliberately not baked against the definition's original layer.
+    let lt_name = crate::scene::view::render::linetype_name_for_viewport(doc, sub, viewport);
+    let complex_member = matches!(
+        sub,
+        EntityType::Line(_)
+            | EntityType::Arc(_)
+            | EntityType::Circle(_)
+            | EntityType::LwPolyline(_)
+            | EntityType::Polyline2D(_)
+            | EntityType::Polyline3D(_)
+            | EntityType::Ellipse(_)
+    ) && !(on_l0 && lt_l0)
+        && !lt_is_byblock
+        && crate::io::linetypes::resolve_complex_lt(doc, lt_name).is_some();
+
+    let mut walked_complex = false;
+    let wires_out = if complex_member {
+        // Reuse the same f64 path-walking and glyph emission as standalone
+        // entities, rather than implementing a subtly different linetype
+        // interpreter for cached blocks.
+        let mut complex = crate::scene::convert::tess::tessellate_entity(
+            doc,
+            &HashSet::default(),
+            viewport,
+            bg_color,
+            anno_scale,
+            annotation_scale_handle,
+            sub,
+            None,
+            None,
+            None,
+            false,
+            &HashSet::default(),
+        );
+        // If the walk's safety limit refused a huge pattern, fall back to the
+        // original primitive path; the normal path does this too.
+        walked_complex = !complex.is_empty()
+            && complex.iter().all(|wire| wire.pattern_length <= 0.0);
+        if walked_complex {
+            // The standalone renderer has adapted the base colour for its
+            // background. Block definitions instead cache raw colours and
+            // re-adapt at expand time, so ByBlock/layer inheritance remains
+            // correct and switching the canvas background does not tint a
+            // cached prototype permanently.
+            let mut display_color =
+                crate::scene::view::render::adapt_to_bg(sub_color, bg_color);
+            if layer_locked {
+                display_color = fade_toward_bg(display_color, bg_color);
+            }
+            for wire in &mut complex {
+                if wire.color == display_color {
+                    wire.color = sub_color;
+                }
+                for vertex in &mut wire.text_verts {
+                    if vertex.color == display_color {
+                        vertex.color = sub_color;
+                    }
+                }
+            }
+            complex
+        } else {
+            tessellate::tessellate(
+                doc, h, sub, false, sub_color, pat_len, pat, lw_px, anno_scale,
+                annotation_scale_handle, None, bg_color, false,
+            )
+        }
+    } else if let EntityType::Dimension(dimension) = sub {
         use crate::entities::dimension::DimensionTess;
         // Block-definition members never carry the reference-only
         // designation (it targets top-level geometry — see the API v9
@@ -968,8 +1042,11 @@ fn tessellate_sub_local(
             preserve_color,
             canvas_color,
             aci,
-            pattern_length: pat_len,
-            pattern: pat,
+            // CPU-walked complex linetypes have already emitted their exact
+            // dash/glyph geometry. Applying the source linetype pattern again
+            // would dash those little strokes a second time on the GPU.
+            pattern_length: if walked_complex { wire.pattern_length } else { pat_len },
+            pattern: if walked_complex { wire.pattern } else { pat },
             linetype_scale: sub.common().linetype_scale as f32,
             line_weight_px: lw_px,
             pattern_stations: wire.pattern_stations,
