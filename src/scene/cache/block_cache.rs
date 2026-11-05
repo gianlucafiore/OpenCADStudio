@@ -135,6 +135,12 @@ pub struct NestedRef {
     pub block_name: String,
     pub xform: Transform,
     pub style: crate::scene::render_graph::InsertStyleSpec,
+    // Keep the type's name/content, not just the dash lengths: an inherited
+    // complex type needs its embedded text/shapes when nested blocks expand.
+    own_linetype: InheritedLinetype,
+    layer_linetype: InheritedLinetype,
+    linetype_byblock: bool,
+    linetype_layer0_bylayer: bool,
     /// ATTRIB geometry is stored in the parent definition's frame, but resolves
     /// ByBlock and layer-0 properties through this nested insert's style.
     pub attachments: Vec<LocalWire>,
@@ -153,6 +159,36 @@ pub struct NestedRef {
     /// parent block — narrows the depth sub-range its children may occupy.
     pub local_rank: f32,
     pub suppress_root_points: bool,
+}
+
+#[derive(Clone, Debug)]
+struct InheritedLinetype {
+    name: String,
+    complex: Option<Arc<crate::io::linetypes::ComplexLt>>,
+}
+
+impl InheritedLinetype {
+    fn resolve(document: &Document, name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            complex: crate::io::linetypes::resolve_complex_lt(document, name).map(Arc::new),
+        }
+    }
+}
+
+fn layer_linetype_for_insert(
+    document: &Document,
+    insert: &codec::entities::Insert,
+    viewport: Option<Handle>,
+) -> InheritedLinetype {
+    let mut layer_common = insert.common.clone();
+    layer_common.linetype = "ByLayer".to_string();
+    InheritedLinetype::resolve(
+        document,
+        crate::scene::view::render::linetype_name_for_common_viewport(
+            document, &layer_common, viewport,
+        ),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -201,6 +237,8 @@ struct ExpansionPrototypeKey {
     block_name: String,
     linear: [u64; 9],
     insert_style: Vec<u32>,
+    insert_linetype: String,
+    layer_linetype: String,
     selected: bool,
     is_xref: bool,
     suppress_root_points: bool,
@@ -779,6 +817,17 @@ fn build_nested_ref(
         block_name: nested_ins.block_name.clone(),
         xform,
         style: crate::scene::render_graph::InsertStyleSpec::new(doc, nested_ins, viewport),
+        own_linetype: InheritedLinetype::resolve(
+            doc,
+            crate::scene::view::render::linetype_name_for_common_viewport(
+                doc, &nested_ins.common, viewport,
+            ),
+        ),
+        layer_linetype: layer_linetype_for_insert(doc, nested_ins, viewport),
+        linetype_byblock: nested_ins.common.linetype.eq_ignore_ascii_case("ByBlock"),
+        linetype_layer0_bylayer: plot_l0
+            && (nested_ins.common.linetype.is_empty()
+                || nested_ins.common.linetype.eq_ignore_ascii_case("ByLayer")),
         attachments,
         instance_offsets: crate::scene::render_graph::array_offsets(nested_ins),
         plot_visible,
@@ -1223,6 +1272,7 @@ pub fn expand_insert(
         if !crate::scene::block_construction::is_construction(&ins.common)
             && !ins.is_array() && !has_masks && cache.prototype_blocks.contains(&ins.block_name) {
             Some(expansion_prototype_key(
+                doc,
                 ins,
                 &xform,
                 ins_resolved_color,
@@ -1330,6 +1380,14 @@ pub fn expand_insert(
 
     let ctx = ExpandCtx {
         cache,
+        doc,
+        ins_linetype: InheritedLinetype::resolve(
+            doc,
+            crate::scene::view::render::linetype_name_for_common_viewport(
+                doc, &ins.common, None,
+            ),
+        ),
+        layer_linetype: layer_linetype_for_insert(doc, ins, None),
         ins_color: ins_resolved_color,
         ins_aci,
         ins_pat_len,
@@ -1444,6 +1502,7 @@ fn transform_translation(transform: &Transform) -> [f64; 3] {
 
 #[allow(clippy::too_many_arguments)]
 fn expansion_prototype_key(
+    doc: &Document,
     ins: &codec::entities::Insert,
     transform: &Transform,
     ins_color: [f32; 4],
@@ -1486,10 +1545,16 @@ fn expansion_prototype_key(
     insert_style.push(pslt_factor.to_bits());
     insert_style.extend(bg_color.map(f32::to_bits));
     insert_style.push(anno_scale.to_bits());
+    let ins_linetype = crate::scene::view::render::linetype_name_for_common_viewport(
+        doc, &ins.common, None,
+    ).to_string();
+    let layer_linetype = layer_linetype_for_insert(doc, ins, None).name;
     ExpansionPrototypeKey {
         block_name: ins.block_name.clone(),
         linear,
         insert_style,
+        insert_linetype: ins_linetype,
+        layer_linetype,
         selected,
         is_xref,
         suppress_root_points,
@@ -1613,6 +1678,9 @@ fn is_standalone_analytical_curve(wire: &WireModel) -> bool {
 
 struct ExpandCtx<'a> {
     cache: &'a BlockCache,
+    doc: &'a Document,
+    ins_linetype: InheritedLinetype,
+    layer_linetype: InheritedLinetype,
     ins_color: [f32; 4],
     ins_aci: u8,
     ins_pat_len: f32,
@@ -1676,6 +1744,8 @@ fn nested_prototype_key(
         block_name: block_name.to_string(),
         linear,
         style,
+        insert_linetype: ctx.ins_linetype.name.clone(),
+        layer_linetype: ctx.layer_linetype.name.clone(),
         selected: ctx.selected,
         is_xref: ctx.is_xref,
         depth_scale: depth_scale.to_bits(),
@@ -1848,6 +1918,8 @@ struct NestedPrototypeKey {
     block_name: String,
     linear: [u64; 9],
     style: Vec<u32>,
+    insert_linetype: String,
+    layer_linetype: String,
     selected: bool,
     is_xref: bool,
     depth_scale: u32,
@@ -2187,8 +2259,23 @@ fn expand_defn(
                 } else {
                     nref.plot_visible
                 };
+                let ins_linetype = if nref.linetype_byblock {
+                    ctx.ins_linetype.clone()
+                } else if nref.linetype_layer0_bylayer {
+                    ctx.layer_linetype.clone()
+                } else {
+                    nref.own_linetype.clone()
+                };
+                let layer_linetype = if nref.plot_l0 {
+                    ctx.layer_linetype.clone()
+                } else {
+                    nref.layer_linetype.clone()
+                };
                 let inner_ctx = ExpandCtx {
                     cache: ctx.cache,
+                    doc: ctx.doc,
+                    ins_linetype,
+                    layer_linetype,
                     ins_color: nested_style.insert.0,
                     ins_aci: nested_style.insert.4,
                     ins_pat_len: nested_style.insert.1,
