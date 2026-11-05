@@ -3963,3 +3963,203 @@ mod metrics_depth_tests {
         assert!(warnings_after.is_empty());
     }
 }
+
+
+#[cfg(test)]
+mod block_linetype_regression_tests {
+    use super::*;
+    use codec::entities::{Circle, Insert, Line};
+    use codec::tables::linetype::LineTypeElement;
+    use codec::tables::{BlockRecord, Layer, LineType};
+
+    // The pattern is 2 units drawn, then a 1-unit gap (3 units total).
+    fn document() -> Document {
+        let mut doc = Document::new();
+        let mut dashed = LineType::new("BLOCK_TEST_DASH");
+        dashed.handle = doc.allocate_handle();
+        dashed.add_element(LineTypeElement::dash(2.0));
+        dashed.add_element(LineTypeElement::space(1.0));
+        dashed.pattern_length = 3.0;
+        doc.line_types.add(dashed).unwrap();
+
+        let mut layer = Layer::new("BLOCK_TEST_LAYER");
+        layer.line_type = "BLOCK_TEST_DASH".to_string();
+        doc.layers.add(layer).unwrap();
+        doc
+    }
+
+    fn add_block(doc: &mut Document, name: &str) -> Handle {
+        let mut record = BlockRecord::new(name);
+        record.handle = doc.allocate_handle();
+        let handle = record.handle;
+        doc.block_records.add(record).unwrap();
+        handle
+    }
+
+    fn add_member(doc: &mut Document, owner: Handle, mut entity: EntityType) {
+        entity.common_mut().owner_handle = owner;
+        doc.add_entity(entity).unwrap();
+    }
+
+    fn expand(doc: &mut Document, insert: Insert, pslt_factor: f32) -> Vec<WireModel> {
+        let handle = doc.add_entity(EntityType::Insert(insert.clone())).unwrap();
+        let style = crate::scene::view::render::render_style_for(
+            doc,
+            &EntityType::Insert(insert.clone()),
+        );
+        let layer =
+            crate::scene::view::render::layer_render_style(doc, &insert.common.layer);
+        let cache = BlockCache::build(
+            doc,
+            1.0,
+            None,
+            true,
+            [0.0, 0.0, 0.0, 1.0],
+            None,
+            &HashMap::default(),
+        );
+        expand_insert(
+            doc,
+            &cache,
+            &insert,
+            handle,
+            style.0,
+            style.4,
+            style.1,
+            style.2,
+            style.3,
+            layer,
+            0,
+            true,
+            false,
+            pslt_factor,
+            None,
+            None,
+            false,
+            [0.0, 0.0, 0.0, 1.0],
+            1.0,
+            crate::scene::BlockScalePolicy::FromInsert,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn assert_patterns(wires: &[WireModel], expected: f32) {
+        assert!(!wires.is_empty(), "block expansion produced no geometry");
+        for wire in wires {
+            assert!(
+                (wire.pattern_length - expected).abs() < 1.0e-3,
+                "wrong block linetype: expected {expected}, got {} (pattern {:?})",
+                wire.pattern_length,
+                wire.pattern
+            );
+            assert!(wire.pattern[0] > 0.0 && wire.pattern[1] < 0.0);
+        }
+    }
+
+    #[test]
+    fn byblock_line_and_circle_keep_member_scale_and_insert_scale() {
+        let mut doc = document();
+        let block = add_block(&mut doc, "BLK_DASHED_CURVES");
+
+        let mut line = Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(30.0, 0.0, 0.0),
+        );
+        line.common.linetype = "ByBlock".to_string();
+        line.common.linetype_scale = 2.0;
+        add_member(&mut doc, block, EntityType::Line(line));
+
+        let mut circle = Circle::new();
+        circle.center = Vector3::new(15.0, 20.0, 0.0);
+        circle.radius = 10.0;
+        circle.common.linetype = "ByBlock".to_string();
+        circle.common.linetype_scale = 2.0;
+        add_member(&mut doc, block, EntityType::Circle(circle));
+
+        let mut insert = Insert::new("BLK_DASHED_CURVES", Vector3::ZERO)
+            .with_scale(2.0, 2.0, 1.0);
+        insert.common.linetype = "BLOCK_TEST_DASH".to_string();
+
+        // LT period 3 x child LTSCALE 2 x INSERT geometry scale 2 = 12.
+        let wires = expand(&mut doc, insert.clone(), 1.0);
+        assert!(wires.len() >= 2, "line and circle must both be rendered");
+        assert_patterns(&wires, 12.0);
+
+        // PSLTSCALE also applies to the standalone analytical circle path.
+        let half = expand(&mut doc, insert, 0.5);
+        assert_patterns(&half, 6.0);
+    }
+
+    #[test]
+    fn layer_zero_bylayer_keeps_child_scale_without_double_scaling_insert() {
+        let mut doc = document();
+        let block = add_block(&mut doc, "BLK_BYLAYER");
+        let mut line = Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(30.0, 0.0, 0.0),
+        );
+        line.common.layer = "0".to_string();
+        line.common.linetype = "ByLayer".to_string();
+        line.common.linetype_scale = 2.0;
+        add_member(&mut doc, block, EntityType::Line(line));
+
+        let mut insert = Insert::new("BLK_BYLAYER", Vector3::ZERO)
+            .with_scale(2.0, 2.0, 1.0);
+        insert.common.layer = "BLOCK_TEST_LAYER".to_string();
+        insert.common.linetype = "ByLayer".to_string();
+        insert.common.linetype_scale = 5.0;
+
+        // Layer-0 ByLayer uses placing LAYER's linetype, not the INSERT's
+        // entity scale 5. Period 3 x child scale 2 x geometry scale 2 = 12.
+        assert_patterns(&expand(&mut doc, insert, 1.0), 12.0);
+    }
+
+    #[test]
+    fn nested_byblock_insert_preserves_each_linetype_scale() {
+        let mut doc = document();
+        let leaf = add_block(&mut doc, "BLK_LEAF");
+        let mut line = Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        );
+        line.common.linetype = "ByBlock".to_string();
+        line.common.linetype_scale = 3.0;
+        add_member(&mut doc, leaf, EntityType::Line(line));
+
+        let root = add_block(&mut doc, "BLK_PARENT");
+        let mut nested = Insert::new("BLK_LEAF", Vector3::ZERO);
+        nested.common.linetype = "ByBlock".to_string();
+        nested.common.linetype_scale = 2.0;
+        add_member(&mut doc, root, EntityType::Insert(nested));
+
+        let mut insert = Insert::new("BLK_PARENT", Vector3::ZERO)
+            .with_scale(2.0, 2.0, 1.0);
+        insert.common.linetype = "BLOCK_TEST_DASH".to_string();
+        insert.common.linetype_scale = 4.0;
+
+        // 3 (pattern) x 4 (root) x 2 (nested) x 3 (leaf) x 2 (geometry).
+        assert_patterns(&expand(&mut doc, insert, 1.0), 144.0);
+    }
+
+    #[test]
+    fn explicit_child_linetype_is_not_scaled_twice() {
+        let mut doc = document();
+        let block = add_block(&mut doc, "BLK_EXPLICIT");
+        let mut line = Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        );
+        line.common.linetype = "BLOCK_TEST_DASH".to_string();
+        line.common.linetype_scale = 3.0;
+        add_member(&mut doc, block, EntityType::Line(line));
+
+        let mut insert = Insert::new("BLK_EXPLICIT", Vector3::ZERO)
+            .with_scale(2.0, 2.0, 1.0);
+        insert.common.linetype = "BLOCK_TEST_DASH".to_string();
+        insert.common.linetype_scale = 7.0;
+
+        // The INSERT's own linetype scale 7 has no effect on an explicit child.
+        assert_patterns(&expand(&mut doc, insert, 1.0), 18.0);
+    }
+}
